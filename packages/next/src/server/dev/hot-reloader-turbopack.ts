@@ -254,7 +254,7 @@ function setupServerHmr(
       // Turbopack's server update currently identifies changed chunks rather
       // than route entrypoints. Application WebSockets are kept separate
       // from HMR clients, so closing them here cannot disrupt HMR itself.
-      closeAllWebSockets(1012)
+      await closeAllWebSockets(1012)
 
       // `EcmascriptMergedUpdate` is the only instruction the Node.js runtime
       // knows how to apply; `ChunkListUpdate` is browser-only. Anything else is
