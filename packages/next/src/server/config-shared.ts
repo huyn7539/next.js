@@ -512,6 +512,7 @@ export interface ExperimentalConfig {
    * @default false
    */
   collapseAdapterRoutes?: boolean
+  webSocketRouteHandlers?: boolean
   useSkewCookie?: boolean
   /** @deprecated use top-level `cacheHandlers` instead */
   cacheHandlers?: NextConfig['cacheHandlers']
@@ -2251,6 +2252,7 @@ export const defaultConfig = Object.freeze({
     coldCacheBadge: false,
     collapseAdapterRoutes: false,
     devValidationWorker: true,
+    webSocketRouteHandlers: false,
     useSkewCookie: false,
     cssChunking: true,
     multiZoneDraftMode: false,
@@ -2456,6 +2458,7 @@ export interface NextConfigRuntime {
     | 'exposeTestingApiInProductionBuild'
     | 'instantInsights'
     | 'requestInsights'
+    | 'webSocketRouteHandlers'
   > & {
     // Pick on @internal fields generates invalid .d.ts files
     /** @internal */
@@ -2524,6 +2527,7 @@ export function getNextConfigRuntime(
     exposeTestingApiInProductionBuild: ex.exposeTestingApiInProductionBuild,
     instantInsights: ex.instantInsights,
     requestInsights: ex.requestInsights,
+    webSocketRouteHandlers: ex.webSocketRouteHandlers,
 
     trustHostHeader: ex.trustHostHeader,
     isExperimentalCompile: ex.isExperimentalCompile,
