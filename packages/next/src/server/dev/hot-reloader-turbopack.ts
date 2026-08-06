@@ -1179,6 +1179,7 @@ export async function createHotReloaderTurbopack(
     getDisableDevIndicatorMiddleware(),
     getRestartDevServerMiddleware({
       telemetry: opts.telemetry,
+      restartServer: opts.restartServer,
       turbopackProject: project,
     }),
     devToolsConfigMiddleware({
