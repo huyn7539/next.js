@@ -396,6 +396,11 @@ pub async fn get_server_module_options_context(
     enable_tracing: bool,
 ) -> Result<Vc<ModuleOptionsContext>> {
     let next_mode = mode.await?;
+    // Lazy compilation is only supported by the Node.js App SSR runtime.
+    let lazy_compilation = next_mode.is_development()
+        && matches!(next_runtime, NextRuntime::NodeJs)
+        && matches!(ty, ServerContextType::AppSSR { .. })
+        && *next_config.turbopack_lazy_dynamic_imports().await?;
     let mut next_server_rules = get_next_server_transforms_rules(
         next_config,
         ty.clone(),
@@ -549,6 +554,7 @@ pub async fn get_server_module_options_context(
             infer_module_side_effects: *next_config.turbopack_infer_module_side_effects().await?,
             cjs_tree_shaking: *next_config.turbopack_cjs_tree_shaking().await?,
             cjs_scope_hoisting: *next_config.turbopack_cjs_scope_hoisting().await?,
+            lazy_compilation,
             ..Default::default()
         },
         execution_context: Some(execution_context),
@@ -685,6 +691,10 @@ pub async fn get_server_module_options_context(
             };
 
             let foreign_code_module_options_context = ModuleOptionsContext {
+                ecmascript: EcmascriptOptionsContext {
+                    lazy_compilation: false,
+                    ..module_options_context.ecmascript.clone()
+                },
                 module_rules: foreign_next_server_rules.clone(),
                 enable_webpack_loaders: foreign_enable_webpack_loaders,
                 // NOTE(WEB-1016) PostCSS transforms should also apply to foreign code.
@@ -698,6 +708,7 @@ pub async fn get_server_module_options_context(
                     enable_typescript_transform: Some(
                         TypescriptTransformOptions::default().resolved_cell(),
                     ),
+                    lazy_compilation: false,
                     ..module_options_context.ecmascript.clone()
                 },
                 module_rules: foreign_next_server_rules,
@@ -1022,6 +1033,8 @@ pub struct ServerChunkingContextOptions {
     pub hash_salt: ResolvedVc<RcStr>,
     pub style_groups_algorithm: StyleGroupsAlgorithm,
     pub per_page_module_graph: Vc<bool>,
+    /// Emit dynamic imports as manifest chunks for lazy compilation.
+    pub lazy_dynamic_imports: Vc<bool>,
 }
 
 /// Like `get_server_chunking_context` but all assets are emitted as client assets (so `/_next`)
@@ -1051,6 +1064,7 @@ pub async fn get_server_chunking_context_with_client_assets(
         hash_salt,
         style_groups_algorithm,
         per_page_module_graph,
+        lazy_dynamic_imports,
     } = options;
     let css_url_suffix = css_url_suffix.to_resolved().await?;
 
@@ -1107,6 +1121,8 @@ pub async fn get_server_chunking_context_with_client_assets(
     } else {
         SourceMapSourceType::RelativeUri
     });
+    builder = builder.manifest_chunks(next_mode.is_development() && *lazy_dynamic_imports.await?);
+
     if next_mode.is_production() {
         builder = builder
             .chunking_config(
@@ -1159,6 +1175,7 @@ pub async fn get_server_chunking_context(
         hash_salt,
         style_groups_algorithm,
         per_page_module_graph,
+        lazy_dynamic_imports: _,
     } = options;
     let css_url_suffix = css_url_suffix.to_resolved().await?;
     let next_mode = mode.await?;
