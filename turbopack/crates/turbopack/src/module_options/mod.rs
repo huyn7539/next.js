@@ -248,6 +248,7 @@ impl ModuleOptions {
                     infer_module_side_effects,
                     cjs_tree_shaking,
                     cjs_scope_hoisting,
+                    lazy_compilation,
                     ref preset_env_config,
                     ..
                 },
@@ -342,6 +343,7 @@ impl ModuleOptions {
             infer_module_side_effects,
             cjs_tree_shaking,
             cjs_scope_hoisting,
+            lazy_compilation,
             ..Default::default()
         };
         let ecmascript_options_vc = ecmascript_options.resolved_cell();
