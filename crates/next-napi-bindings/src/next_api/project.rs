@@ -757,7 +757,7 @@ pub async fn project_update(
 #[tracing::instrument(level = "info", name = "activate lazy chunk", skip_all)]
 #[napi]
 pub async fn project_activate_lazy_chunk(
-    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: &External<ProjectInstance>,
     chunk_path: RcStr,
 ) -> napi::Result<bool> {
     let ctx = &project.turbopack_ctx;
