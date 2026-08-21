@@ -102,7 +102,13 @@ async fn read_glob_internal(
                                 // Add the directory to `results` if it is a whole match of the glob
                                 handle_file(&mut result, &entry_path, segment, entry);
                                 // Recursively handle the directory
-                                handle_dir(&mut result, entry_path, segment, path).await?;
+                                handle_dir(
+                                    &mut result,
+                                    entry_path,
+                                    segment,
+                                    target.file_system_path(),
+                                )
+                                .await?;
                             } else {
                                 handle_file(&mut result, &entry_path, segment, entry);
                             }

@@ -33,7 +33,7 @@ ref-cast = "1.0.20"
 rustc-hash = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
-serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+serde_json = { workspace = true, features = ["raw_value"] }
 smallvec = { workspace = true }
 swc_sourcemap = { workspace = true }
 swc_core = { workspace = true, features = ["ecma_preset_env", "common"] }

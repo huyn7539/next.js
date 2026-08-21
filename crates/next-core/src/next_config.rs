@@ -188,6 +188,17 @@ pub struct NextConfig {
     // webpack: Option<serde_json::Value>,
 }
 
+pub fn additional_roots_from_json(string: &str) -> Result<FxIndexMap<RcStr, AdditionalRootConfig>> {
+    let value: serde_json::Value = serde_json::from_str(string)?;
+    let Some(roots) = value
+        .get("turbopack")
+        .and_then(|value| value.get("additionalRoots"))
+    else {
+        return Ok(FxIndexMap::default());
+    };
+    Ok(serde_json::from_value(roots.clone())?)
+}
+
 #[turbo_tasks::value_impl]
 impl NextConfig {
     #[turbo_tasks::function]
@@ -196,6 +207,24 @@ impl NextConfig {
         new.experimental.turbopack_source_maps = Some(true);
         new.experimental.turbopack_input_source_maps = Some(false);
         new.cell()
+    }
+}
+
+#[cfg(test)]
+mod additional_roots_tests {
+    use super::additional_roots_from_json;
+
+    #[test]
+    fn preserves_json_property_order_and_arbitrary_keys() {
+        let roots = additional_roots_from_json(
+            r#"{"turbopack":{"additionalRoots":{"2":{"path":"/two"},"":{"path":"/empty"},"a/b":{"path":"/slash","optional":true}}}}"#,
+        )
+        .unwrap();
+        let entries: Vec<_> = roots.into_iter().collect();
+        assert_eq!(entries[0].0, "2");
+        assert_eq!(entries[1].0, "");
+        assert_eq!(entries[2].0, "a/b");
+        assert!(entries[2].1.optional);
     }
 }
 
@@ -605,6 +634,9 @@ pub enum RemotePatternProtocol {
 pub struct TurbopackConfig {
     #[serde(default)]
     #[bincode(with = "turbo_bincode::indexmap")]
+    pub additional_roots: FxIndexMap<RcStr, AdditionalRootConfig>,
+    #[serde(default)]
+    #[bincode(with = "turbo_bincode::indexmap")]
     pub rules: FxIndexMap<RcStr, RuleConfigCollection>,
     #[bincode(with = "turbo_bincode::serde_self_describing")]
     pub resolve_alias: Option<FxIndexMap<RcStr, JsonValue>>,
@@ -614,6 +646,25 @@ pub struct TurbopackConfig {
     /// Issue patterns to ignore (suppress) from Turbopack output.
     #[serde(default)]
     pub ignore_issue: Option<Vec<TurbopackIgnoreIssueRule>>,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    TraceRawVcs,
+    NonLocalValue,
+    OperationValue,
+    Encode,
+    Decode,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct AdditionalRootConfig {
+    pub path: RcStr,
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(

@@ -45,8 +45,9 @@ use turbo_tasks::{
 };
 use turbo_tasks_env::{EnvMap, ProcessEnv};
 use turbo_tasks_fs::{
-    DiskFileSystem, DiskWatcherConfig, FileContent, FileSystem, FileSystemPath, VirtualFileSystem,
-    canonicalize_to_rcstr, invalidation,
+    DiskFileSystem, DiskFileSystemMap, DiskWatcherConfig, FileContent, FileSystem, FileSystemPath,
+    VirtualFileSystem, canonicalize_to_rcstr, disk_file_system_map, empty_disk_file_system_map,
+    invalidation,
 };
 use turbo_unix_path::join_path;
 use turbopack::{
@@ -96,6 +97,9 @@ use turbopack_node::worker_threads_backend;
 use turbopack_nodejs::{NodeJsChunkingContext, fs::NodeModulesPathMatcher};
 
 use crate::{
+    additional_roots::{
+        AdditionalRootIssue, emit_additional_root_issues, prepare_additional_roots,
+    },
     aggregate_hmr::{AggregateHmrVersion, ChunkListUpdateBuilder, DiffResult, diff_chunks_against},
     app::{AppProject, OptionAppProject},
     empty::EmptyEndpoint,
@@ -438,11 +442,160 @@ pub struct Instrumentation {
     pub edge: ResolvedVc<Box<dyn Endpoint>>,
 }
 
-#[turbo_tasks::value]
+#[derive(
+    Clone, Debug, PartialEq, Eq, NonLocalValue, OperationValue, TraceRawVcs, Encode, Decode,
+)]
+struct ProjectContainerState {
+    options: ProjectOptions,
+    project_file_system: OperationVc<DiskFileSystem>,
+    output_file_system: OperationVc<DiskFileSystem>,
+    additional_file_systems: Vec<(RcStr, OperationVc<DiskFileSystem>)>,
+    additional_root_issues: Vec<AdditionalRootIssue>,
+}
+
+#[turbo_tasks::value(serialization = "skip", evict = "never", eq = "manual", cell = "new")]
 pub struct ProjectContainer {
     name: RcStr,
-    options_state: State<Option<ProjectOptions>>,
+    state: State<Option<ProjectContainerState>>,
     versioned_content_map: Option<ResolvedVc<VersionedContentMap>>,
+    #[turbo_tasks(trace_ignore, debug_ignore)]
+    update_lock: tokio::sync::Mutex<()>,
+}
+
+async fn prepare_project_container_state(
+    container: ResolvedVc<ProjectContainer>,
+    options: ProjectOptions,
+) -> Result<ProjectContainerState> {
+    let map = disk_file_system_map_operation(container);
+    let config_json: serde_json::Value = serde_json::from_str(&options.next_config)?;
+    let dist_dir_root = config_json
+        .get("distDirRoot")
+        .and_then(|value| value.as_str())
+        .unwrap_or(".next");
+    let denied_path = join_path(&options.project_path, dist_dir_root)
+        .context("distDirRoot must stay inside the project root")?
+        .into();
+    let denied_profiles_path = join_path(&options.project_path, DIST_PROFILES_DIR_NAME)
+        .unwrap()
+        .into();
+    let watcher_config = DiskWatcherConfig {
+        poll_interval: options.watch.poll_interval,
+        report_invalidation_reason: true,
+        ..Default::default()
+    };
+    let project_file_system = disk_file_system_with_options_operation(
+        PROJECT_FILESYSTEM_NAME,
+        options.root_path.clone(),
+        vec![denied_path, denied_profiles_path],
+        watcher_config,
+        false,
+        map,
+    );
+    let output_file_system = disk_file_system_operation(
+        rcstr!("output"),
+        options.root_path.clone(),
+        false,
+        empty_disk_file_system_map(),
+    );
+
+    let additional_roots = prepare_additional_roots(
+        &options.next_config,
+        &options.root_path,
+        watcher_config,
+        map,
+    )?;
+
+    Ok(ProjectContainerState {
+        options,
+        project_file_system,
+        output_file_system,
+        additional_file_systems: additional_roots.file_systems,
+        additional_root_issues: additional_roots.issues,
+    })
+}
+
+async fn publish_project_container_state(
+    container: ResolvedVc<ProjectContainer>,
+    new_state: ProjectContainerState,
+) -> Result<()> {
+    let this = container.await?;
+    let old_state = this.state.get_untracked().clone();
+    let old_watch = old_state
+        .as_ref()
+        .is_some_and(|state| state.options.watch.enable);
+    let new_watch = new_state.options.watch.enable;
+
+    let old_operations: FxHashMap<_, _> = old_state
+        .as_ref()
+        .map(|state| state.additional_file_systems.iter().cloned().collect())
+        .unwrap_or_default();
+    let mut prepared = Vec::new();
+    for (key, operation) in &new_state.additional_file_systems {
+        if new_watch && (!old_watch || old_operations.get(key) != Some(operation)) {
+            let fs = operation.read_strongly_consistent().await?;
+            fs.start_watching().await?;
+            prepared.push(*operation);
+        } else if !new_watch {
+            operation
+                .read_strongly_consistent()
+                .await?
+                .invalidate_with_reason(|path| invalidation::Initialize {
+                    path: RcStr::from(path.to_string_lossy()),
+                });
+        }
+    }
+    let project_fs = new_state
+        .project_file_system
+        .read_strongly_consistent()
+        .await?;
+    if new_watch
+        && (!old_watch
+            || old_state
+                .as_ref()
+                .is_none_or(|state| state.project_file_system != new_state.project_file_system))
+    {
+        project_fs.start_watching().await?;
+    } else if !new_watch {
+        project_fs.invalidate_with_reason(|path| invalidation::Initialize {
+            path: RcStr::from(path.to_string_lossy()),
+        });
+    }
+    new_state
+        .output_file_system
+        .read_strongly_consistent()
+        .await?
+        .invalidate_with_reason(|path| invalidation::Initialize {
+            path: RcStr::from(path.to_string_lossy()),
+        });
+
+    this.state.set(Some(new_state.clone()));
+
+    if let Some(old_state) = old_state {
+        for (key, operation) in old_state.additional_file_systems {
+            let unchanged = new_state
+                .additional_file_systems
+                .iter()
+                .any(|(new_key, new_operation)| new_key == &key && new_operation == &operation);
+            if old_watch && (!new_watch || !unchanged) {
+                operation
+                    .read_strongly_consistent()
+                    .await?
+                    .stop_watching()
+                    .await;
+            }
+        }
+        if old_watch
+            && (!new_watch || old_state.project_file_system != new_state.project_file_system)
+        {
+            old_state
+                .project_file_system
+                .read_strongly_consistent()
+                .await?
+                .stop_watching()
+                .await;
+        }
+    }
+    Ok(())
 }
 
 #[turbo_tasks::value_impl]
@@ -458,7 +611,8 @@ impl ProjectContainer {
             } else {
                 None
             },
-            options_state: State::new(None),
+            state: State::new(None),
+            update_lock: tokio::sync::Mutex::new(()),
         }
         .cell())
     }
@@ -476,7 +630,58 @@ fn project_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
 
 #[turbo_tasks::function(operation, root)]
 fn output_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
-    project.project_fs()
+    project.output_fs()
+}
+
+#[turbo_tasks::function(operation, root)]
+fn disk_file_system_operation(
+    name: RcStr,
+    canonical_root: RcStr,
+    read_only: bool,
+    map: OperationVc<DiskFileSystemMap>,
+) -> Vc<DiskFileSystem> {
+    DiskFileSystem::new_with_map(name, Vc::cell(canonical_root), read_only, map)
+}
+
+#[turbo_tasks::function(operation, root)]
+pub(crate) fn disk_file_system_with_options_operation(
+    name: RcStr,
+    canonical_root: RcStr,
+    denied_paths: Vec<RcStr>,
+    mut watcher_config: DiskWatcherConfig,
+    read_only: bool,
+    map: OperationVc<DiskFileSystemMap>,
+) -> Vc<DiskFileSystem> {
+    watcher_config.extended_batch_delay_matcher =
+        Some(ResolvedVc::upcast(NodeModulesPathMatcher.resolved_cell()));
+    DiskFileSystem::new_with_options_and_map(
+        name,
+        Vc::cell(canonical_root),
+        denied_paths,
+        watcher_config,
+        read_only,
+        map,
+    )
+}
+
+#[turbo_tasks::function(operation, session_dependent)]
+async fn disk_file_system_map_operation(
+    container: ResolvedVc<ProjectContainer>,
+) -> Result<Vc<DiskFileSystemMap>> {
+    let container = container.await?;
+    let state = container
+        .state
+        .get()
+        .clone()
+        .context("ProjectContainer needs to be initialized with initialize()")?;
+    let mut filesystems = Vec::with_capacity(1 + state.additional_file_systems.len());
+    let project = state.project_file_system.connect().to_resolved().await?;
+    filesystems.push((project.await?.root().clone(), project));
+    for (_, operation) in state.additional_file_systems {
+        let fs = operation.connect().to_resolved().await?;
+        filesystems.push((fs.await?.root().clone(), fs));
+    }
+    Ok(disk_file_system_map(filesystems))
 }
 
 enum EnvDiffType {
@@ -580,44 +785,10 @@ impl ProjectContainer {
         );
         let span_clone = span.clone();
         async move {
-            let watch = options.watch;
-
-            if let Some(old_options) = &*this.options_state.get_untracked() {
-                span.record(
-                    "env_diff",
-                    define_env_diff_report(&old_options.define_env, &options.define_env).as_str(),
-                );
-            }
-            this.options_state.set(Some(options));
-
-            #[turbo_tasks::function(operation, root)]
-            fn project_from_container_operation(
-                container: OperationVc<ProjectContainer>,
-            ) -> Vc<Project> {
-                container.connect().project()
-            }
-            let project = project_from_container_operation(this_op)
-                .resolve()
-                .strongly_consistent()
-                .await?;
-            let project_fs = project_fs_operation(project)
-                .read_strongly_consistent()
-                .await?;
-            if watch.enable {
-                project_fs.start_watching().await?;
-            } else {
-                project_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                    // this path is just used for display purposes
-                    path: RcStr::from(path.to_string_lossy()),
-                });
-            }
-            let output_fs = output_fs_operation(project)
-                .read_strongly_consistent()
-                .await?;
-            output_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                path: RcStr::from(path.to_string_lossy()),
-            });
-            Ok(())
+            let _guard = this.update_lock.lock().await;
+            let container = this_op.resolve().strongly_consistent().await?;
+            let state = prepare_project_container_state(container, options).await?;
+            publish_project_container_state(container, state).await
         }
         .instrument(span_clone)
         .await
@@ -662,10 +833,12 @@ impl ProjectContainer {
                 debug_build_paths,
             } = options;
 
+            let _guard = this.update_lock.lock().await;
             let mut new_options = this
-                .options_state
-                .get()
-                .clone()
+                .state
+                .get_untracked()
+                .as_ref()
+                .map(|state| state.options.clone())
                 .context("ProjectContainer need to be initialized with initialize()")?;
 
             if let Some(root_path) = root_path {
@@ -711,57 +884,15 @@ impl ProjectContainer {
                 new_options.debug_build_paths = Some(debug_build_paths);
             }
 
-            // TODO: Handle mode switch, should prevent mode being switched.
-            let watch = new_options.watch;
-
-            let project = project_operation(self)
-                .resolve()
-                .strongly_consistent()
-                .await?;
-            let prev_project_fs = project_fs_operation(project)
-                .read_strongly_consistent()
-                .await?;
-            let prev_output_fs = output_fs_operation(project)
-                .read_strongly_consistent()
-                .await?;
-
-            if let Some(old_options) = &*this.options_state.get_untracked() {
+            if let Some(old_state) = &*this.state.get_untracked() {
                 span.record(
                     "env_diff",
-                    define_env_diff_report(&old_options.define_env, &new_options.define_env)
+                    define_env_diff_report(&old_state.options.define_env, &new_options.define_env)
                         .as_str(),
                 );
             }
-            this.options_state.set(Some(new_options));
-            let project = project_operation(self)
-                .resolve()
-                .strongly_consistent()
-                .await?;
-            let project_fs = project_fs_operation(project)
-                .read_strongly_consistent()
-                .await?;
-            let output_fs = output_fs_operation(project)
-                .read_strongly_consistent()
-                .await?;
-
-            if !ReadRef::ptr_eq(&prev_project_fs, &project_fs) {
-                if watch.enable {
-                    // TODO stop watching: prev_project_fs.stop_watching()?;
-                    project_fs.start_watching().await?;
-                } else {
-                    project_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                        // this path is just used for display purposes
-                        path: RcStr::from(path.to_string_lossy()),
-                    });
-                }
-            }
-            if !ReadRef::ptr_eq(&prev_output_fs, &output_fs) {
-                prev_output_fs.invalidate_with_reason(|path| invalidation::Initialize {
-                    path: RcStr::from(path.to_string_lossy()),
-                });
-            }
-
-            Ok(())
+            let state = prepare_project_container_state(self, new_options).await?;
+            publish_project_container_state(self, state).await
         }
         .instrument(span_clone)
         .await
@@ -770,7 +901,7 @@ impl ProjectContainer {
 
 #[turbo_tasks::value_impl]
 impl ProjectContainer {
-    #[turbo_tasks::function]
+    #[turbo_tasks::function(session_dependent)]
     pub async fn project(&self) -> Result<Vc<Project>> {
         let env_map: Vc<EnvMap>;
         let next_config;
@@ -790,11 +921,15 @@ impl ProjectContainer {
         let deferred_entries;
         let is_persistent_caching_enabled;
         let server_hmr;
+        let project_file_system;
+        let output_file_system;
+        let additional_root_issues;
         {
-            let options = self.options_state.get();
-            let options = options
+            let state = self.state.get();
+            let state = state
                 .as_ref()
                 .context("ProjectContainer need to be initialized with initialize()")?;
+            let options = &state.options;
             env_map = Vc::cell(options.env.iter().cloned().collect());
             define_env = ProjectDefineEnv {
                 client: ResolvedVc::cell(options.define_env.client.iter().cloned().collect()),
@@ -818,7 +953,18 @@ impl ProjectContainer {
             deferred_entries = options.deferred_entries.clone().unwrap_or_default();
             is_persistent_caching_enabled = options.is_persistent_caching_enabled;
             server_hmr = options.server_hmr;
+            project_file_system = state.project_file_system;
+            output_file_system = state.output_file_system;
+            additional_root_issues = state.additional_root_issues.clone();
         }
+
+        let issue_path = project_file_system
+            .connect()
+            .root()
+            .owned()
+            .await?
+            .join(&project_path)?;
+        emit_additional_root_issues(issue_path, additional_root_issues);
 
         let root_path = ResolvedVc::cell(root_path_str);
         let dist_dir = next_config.dist_dir().owned().await?;
@@ -849,6 +995,8 @@ impl ProjectContainer {
             deferred_entries,
             is_persistent_caching_enabled,
             server_hmr,
+            project_file_system,
+            output_file_system,
         }
         .cell())
     }
@@ -952,6 +1100,9 @@ pub struct Project {
 
     /// Whether server-side HMR is enabled (disabled with --no-server-fast-refresh).
     server_hmr: bool,
+
+    project_file_system: OperationVc<DiskFileSystem>,
+    output_file_system: OperationVc<DiskFileSystem>,
 }
 
 #[turbo_tasks::value]
@@ -1039,37 +1190,7 @@ impl Project {
 
     #[turbo_tasks::function]
     pub fn project_fs(&self) -> Result<Vc<DiskFileSystem>> {
-        let denied_path = match join_path(&self.project_path, &self.dist_dir_root) {
-            Some(dist_dir_root) => dist_dir_root.into(),
-            None => {
-                bail!(
-                    "Invalid distDirRoot: {:?}. distDirRoot should not navigate out of the \
-                     projectPath.",
-                    self.dist_dir_root
-                );
-            }
-        };
-
-        // CPU profiles are written to `.next-profiles/` at the project root (see `--cpu-prof`).
-        // Deny access to it so the bundler doesn't traverse into the profiling output directory.
-        let denied_profiles_path = join_path(&self.project_path, DIST_PROFILES_DIR_NAME)
-            .unwrap()
-            .into();
-
-        Ok(DiskFileSystem::new_with_options(
-            PROJECT_FILESYSTEM_NAME,
-            *self.root_path,
-            vec![denied_path, denied_profiles_path],
-            DiskWatcherConfig {
-                poll_interval: self.watch.poll_interval,
-                // the dev server reports these to the user
-                report_invalidation_reason: true,
-                extended_batch_delay_matcher: Some(ResolvedVc::upcast(
-                    NodeModulesPathMatcher.resolved_cell(),
-                )),
-                ..Default::default()
-            },
-        ))
+        Ok(self.project_file_system.connect())
     }
 
     #[turbo_tasks::function]
@@ -1080,7 +1201,7 @@ impl Project {
 
     #[turbo_tasks::function]
     pub fn output_fs(&self) -> Vc<DiskFileSystem> {
-        DiskFileSystem::new(rcstr!("output"), *self.root_path)
+        self.output_file_system.connect()
     }
 
     #[turbo_tasks::function]

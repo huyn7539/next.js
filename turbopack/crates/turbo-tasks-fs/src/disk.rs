@@ -26,8 +26,8 @@ use tracing::Instrument;
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
     CapturedEffect, Effect, EffectExt, EffectStateStorage, InvalidationReason, NonLocalValue,
-    ReadRef, ResolvedVc, TurboTasksApi, ValueToString, Vc, debug::ValueDebugFormat, parallel,
-    trace::TraceRawVcs, turbo_tasks_weak, turbobail,
+    OperationVc, ReadRef, ResolvedVc, TurboTasksApi, ValueToString, Vc, debug::ValueDebugFormat,
+    parallel, trace::TraceRawVcs, turbo_tasks_weak, turbobail,
 };
 use turbo_tasks_hash::{hash_xxh3_hash64, hash_xxh3_hash128};
 use turbo_unix_path::{normalize_path, sys_to_unix, unix_to_sys};
@@ -35,9 +35,10 @@ use turbo_unix_path::{normalize_path, sys_to_unix, unix_to_sys};
 #[cfg(windows)]
 use crate::windows::{is_link_junction_point, to_verbatim_with_case_folded_disk};
 use crate::{
-    AnyhowWrapper, File, FileComparison, FileContent, FileMeta, FileSystem, FileSystemPath,
-    LinkContent, LinkTarget, PersistedFileContent, RawDirectoryContent, RawDirectoryEntry,
-    WriteLinkContent, WriteLinkTarget, WriteLinkTargetType,
+    AnyhowWrapper, DiskFileSystemMap, File, FileComparison, FileContent, FileMeta, FileSystem,
+    FileSystemPath, LinkContent, LinkTarget, PersistedFileContent, RawDirectoryContent,
+    RawDirectoryEntry, WriteLinkContent, WriteLinkTarget, WriteLinkTargetType,
+    empty_disk_file_system_map,
     invalidation::Write,
     invalidator_map::InvalidatorMap,
     mutex_map::MutexMap,
@@ -253,6 +254,8 @@ pub(crate) struct DiskFileSystemInner {
     #[turbo_tasks(debug_ignore, trace_ignore)]
     #[bincode(skip)]
     effect_state_storage: EffectStateStorage,
+    map: OperationVc<DiskFileSystemMap>,
+    read_only: bool,
 }
 
 impl DiskFileSystemInner {
@@ -449,11 +452,18 @@ impl DiskFileSystemInner {
     async fn start_watching_internal(self: &Arc<Self>) -> Result<()> {
         let root_path = self.root_path().to_path_buf();
 
-        // create the directory for the filesystem on disk, if it doesn't exist
-        retry_blocking(|| std::fs::create_dir_all(&root_path))
-            .instrument(tracing::info_span!("create root directory", name = ?root_path))
-            .concurrency_limited(&self.write_semaphore)
-            .await?;
+        if self.read_only {
+            retry_blocking(|| std::fs::metadata(&root_path))
+                .instrument(tracing::info_span!("check root directory", name = ?root_path))
+                .concurrency_limited(&self.read_semaphore)
+                .await?;
+        } else {
+            // create the directory for writable filesystems if it doesn't exist
+            retry_blocking(|| std::fs::create_dir_all(&root_path))
+                .instrument(tracing::info_span!("create root directory", name = ?root_path))
+                .concurrency_limited(&self.write_semaphore)
+                .await?;
+        }
 
         DiskWatcher::start_watching(self.clone()).await?;
 
@@ -680,6 +690,48 @@ impl DiskFileSystem {
         // The whole path was consumed without reaching the filesystem root.
         Ok(None)
     }
+
+    async fn lookup_in_file_system_map(
+        &self,
+        target_sys_path: &Path,
+    ) -> Result<Option<FileSystemPath>> {
+        let map = self.inner.map.connect().await?;
+        if let Some(path) = map.lookup(target_sys_path) {
+            return Ok(Some(path));
+        }
+
+        #[turbo_tasks::value(transparent)]
+        struct OptionRcStr(Option<RcStr>);
+
+        #[turbo_tasks::function(fs, session_dependent)]
+        async fn canonicalize_untracked(sys_path: RcStr) -> Vc<OptionRcStr> {
+            Vc::cell(
+                retry_blocking(|| canonicalize_to_rcstr(Path::new(&*sys_path)))
+                    .await
+                    .ok(),
+            )
+        }
+
+        let ancestors: SmallVec<[&Path; 8]> = target_sys_path.ancestors().collect();
+        for prefix in ancestors.into_iter().rev().skip(1) {
+            let Some(prefix_str) = prefix.to_str() else {
+                return Ok(None);
+            };
+            let Some(canonical) = canonicalize_untracked(RcStr::from(prefix_str))
+                .owned()
+                .await?
+            else {
+                break;
+            };
+            let rest = target_sys_path
+                .strip_prefix(prefix)
+                .expect("ancestors yields prefixes of the target");
+            if let Some(path) = map.lookup(&Path::new(&*canonical).join(rest)) {
+                return Ok(Some(path));
+            }
+        }
+        Ok(None)
+    }
 }
 
 #[allow(dead_code, reason = "we need to hold onto the locks")]
@@ -711,7 +763,23 @@ impl DiskFileSystem {
     /// This API does not canonicalize itself, as that requires IO operations (e.g. symlink
     /// resolution) which should (ideally) not be cached.
     pub fn new(name: RcStr, root: Vc<RcStr>) -> Vc<Self> {
-        Self::new_internal(name, root, Vec::new(), DiskWatcherConfig::default())
+        Self::new_with_map(name, root, false, empty_disk_file_system_map())
+    }
+
+    pub fn new_with_map(
+        name: RcStr,
+        root: Vc<RcStr>,
+        read_only: bool,
+        map: OperationVc<DiskFileSystemMap>,
+    ) -> Vc<Self> {
+        Self::new_internal(
+            name,
+            root,
+            Vec::new(),
+            DiskWatcherConfig::default(),
+            read_only,
+            map,
+        )
     }
 
     /// Create a new instance of `DiskFileSystem`.
@@ -737,7 +805,32 @@ impl DiskFileSystem {
                 "denied_path must be normalized: {denied_path:?}"
             );
         }
-        Self::new_internal(name, root, denied_paths, watcher_config)
+        Self::new_with_options_and_map(
+            name,
+            root,
+            denied_paths,
+            watcher_config,
+            false,
+            empty_disk_file_system_map(),
+        )
+    }
+
+    pub fn new_with_options_and_map(
+        name: RcStr,
+        root: Vc<RcStr>,
+        denied_paths: Vec<RcStr>,
+        watcher_config: DiskWatcherConfig,
+        read_only: bool,
+        map: OperationVc<DiskFileSystemMap>,
+    ) -> Vc<Self> {
+        for denied_path in &denied_paths {
+            debug_assert!(!denied_path.is_empty(), "denied_path must not be empty");
+            debug_assert!(
+                normalize_path(denied_path).as_deref() == Some(&**denied_path),
+                "denied_path must be normalized: {denied_path:?}"
+            );
+        }
+        Self::new_internal(name, root, denied_paths, watcher_config, read_only, map)
     }
 }
 
@@ -749,6 +842,8 @@ impl DiskFileSystem {
         root: Vc<RcStr>,
         denied_paths: Vec<RcStr>,
         watcher_config: DiskWatcherConfig,
+        read_only: bool,
+        map: OperationVc<DiskFileSystemMap>,
     ) -> Result<Vc<Self>> {
         let root = root.owned().await?;
         let instance = DiskFileSystem {
@@ -766,6 +861,8 @@ impl DiskFileSystem {
                 turbo_tasks: turbo_tasks_weak(),
                 tokio_handle: Handle::current(),
                 effect_state_storage: EffectStateStorage::default(),
+                map,
+                read_only,
             }),
         };
 
@@ -936,6 +1033,7 @@ impl FileSystem for DiskFileSystem {
         }
 
         let target = if target_sys_path.is_absolute() {
+            let raw = RcStr::from(sys_to_unix(target_sys_path.to_string_lossy().as_ref()));
             // First try a cheap, purely lexical conversion of the raw target. `relative_to` is
             // ignored for absolute targets.
             let mut target_fs_path = this.try_from_sys_path(self, &target_sys_path, None);
@@ -948,6 +1046,9 @@ impl FileSystem for DiskFileSystem {
                 target_fs_path = this
                     .resolve_link_target_ancestry_slow_path(self, &target_sys_path)
                     .await?;
+            }
+            if target_fs_path.is_none() {
+                target_fs_path = this.lookup_in_file_system_map(&target_sys_path).await?;
             }
 
             let Some(target_fs_path) = target_fs_path else {
@@ -963,6 +1064,7 @@ impl FileSystem for DiskFileSystem {
             };
             // Rewrite from the sys root to the DiskFileSystem root.
             LinkTarget::Absolute {
+                raw,
                 resolved: target_fs_path,
             }
         } else {
@@ -1015,11 +1117,24 @@ impl FileSystem for DiskFileSystem {
             // in; resolving that needs the names of the root's own ancestors, which a
             // root-relative `FileSystemPath` doesn't carry. Rejecting it here is what lets
             // `LinkTarget` carry a resolved path at all.
-            let Some(resolved) = fs_path.parent().try_join(&raw) else {
-                return Ok(LinkContent::Invalid {
-                    reason: rcstr!("the symlink target leaves the filesystem root"),
-                }
-                .cell());
+            let resolved = if let Some(resolved) = fs_path.parent().try_join(&raw) {
+                resolved
+            } else {
+                let absolute_target = this
+                    .to_sys_path_raw(&fs_path.parent())
+                    .join(&target_sys_path)
+                    .normalize_lexically()
+                    .ok();
+                let Some(resolved) = (match absolute_target {
+                    Some(path) => this.lookup_in_file_system_map(&path).await?,
+                    None => None,
+                }) else {
+                    return Ok(LinkContent::Invalid {
+                        reason: rcstr!("the symlink target leaves the configured filesystem roots"),
+                    }
+                    .cell());
+                };
+                resolved
             };
             LinkTarget::Relative { raw, resolved }
         };
@@ -1059,6 +1174,9 @@ impl FileSystem for DiskFileSystem {
         content: ResolvedVc<FileContent>,
     ) -> Result<()> {
         let this = self.await?;
+        if this.inner.read_only {
+            turbobail!("Cannot write to read-only filesystem: {}", this.inner.name);
+        }
         // You might be tempted to use `session_dependent` here, but `write` purely declares a side
         // effect and does not need to be reexecuted in the next session. All side effects are
         // reexecuted in general.
@@ -1281,6 +1399,12 @@ impl FileSystem for DiskFileSystem {
         // re-executed in general.
 
         let this = self.await?;
+        if this.inner.read_only {
+            turbobail!(
+                "Cannot write link to read-only filesystem: {}",
+                this.inner.name
+            );
+        }
         // Check if path is denied - if so, return an error
         if this.inner.is_path_denied(&fs_path) {
             turbobail!("Cannot write link to denied path: {fs_path}");
@@ -2234,14 +2358,12 @@ mod tests {
             ) -> anyhow::Result<()> {
                 // link-via-alias -> <scratch>/alias/foo.txt  (resolves to <fs root>/foo.txt)
                 let via_alias = fs.read_link(root_path.join("link-via-alias")?).await?;
-                assert_eq!(
-                    *via_alias,
+                assert!(matches!(
+                    &*via_alias,
                     LinkContent::Link {
-                        target: LinkTarget::Absolute {
-                            resolved: root_path.join("foo.txt")?,
-                        },
-                    }
-                );
+                        target: LinkTarget::Absolute { resolved, .. },
+                    } if resolved == &root_path.join("foo.txt")?
+                ));
 
                 // link-outside -> <scratch>/outside.txt  (outside of the fs root)
                 let outside = fs.read_link(root_path.join("link-outside")?).await?;
