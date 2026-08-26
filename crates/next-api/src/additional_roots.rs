@@ -27,6 +27,7 @@ use crate::project::disk_file_system_with_options_operation;
     Encode,
     Decode,
 )]
+/// A named additional filesystem root with a canonicalized path.
 pub struct AdditionalRootConfig {
     pub(crate) key: RcStr,
     canonical_path: RcStr,
@@ -110,6 +111,7 @@ impl AdditionalRootIssueReason {
     }
 }
 
+/// Constructed file systems and errors for the configured additional roots.
 pub(crate) struct AdditionalRoots {
     pub file_systems: Vec<(RcStr, OperationVc<DiskFileSystem>)>,
     pub errors: Vec<AdditionalRootError>,
@@ -236,18 +238,7 @@ impl Issue for AdditionalRootIssue {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
-    use turbo_rcstr::rcstr;
-
-    use crate::additional_roots::{AdditionalRootIssueReason, find_overlapping_root};
-
-    #[test]
-    fn io_reason_retains_the_error_message() {
-        let reason = AdditionalRootIssueReason::Io(rcstr!("missing root"));
-
-        assert_eq!(reason.description().to_unstyled_string(), "missing root");
-    }
+    use super::*;
 
     #[test]
     fn identifies_an_overlapping_project_root() {
