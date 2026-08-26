@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{io, path::Path};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -29,25 +29,14 @@ use crate::project::disk_file_system_with_options_operation;
 )]
 pub struct AdditionalRootConfig {
     pub(crate) key: RcStr,
-    pub(crate) path: RcStr,
-    canonical_path: Result<RcStr, AdditionalRootIssue>,
+    canonical_path: RcStr,
 }
 
 impl AdditionalRootConfig {
-    pub fn canonicalize(key: RcStr, path: RcStr, optional: bool) -> Option<Self> {
-        let canonical_path =
-            canonicalize_to_rcstr(Path::new(&*path)).map_err(|error| AdditionalRootIssue {
-                key: key.clone(),
-                path: path.clone(),
-                reason: AdditionalRootIssueReason::Io(RcStr::from(error.to_string())),
-            });
-        if optional && canonical_path.is_err() {
-            return None;
-        }
-        Some(Self {
+    pub fn canonicalize(key: RcStr, path: &str) -> io::Result<Self> {
+        Ok(Self {
             key,
-            path,
-            canonical_path,
+            canonical_path: canonicalize_to_rcstr(Path::new(path))?,
         })
     }
 }
@@ -65,10 +54,20 @@ impl AdditionalRootConfig {
     Encode,
     Decode,
 )]
-pub(crate) struct AdditionalRootIssue {
+pub struct AdditionalRootError {
     key: RcStr,
-    path: RcStr,
+    configured_path: RcStr,
     reason: AdditionalRootIssueReason,
+}
+
+impl AdditionalRootError {
+    pub fn from_io_error(key: RcStr, path: RcStr, error: &io::Error) -> Self {
+        Self {
+            key,
+            configured_path: path,
+            reason: AdditionalRootIssueReason::Io(RcStr::from(error.to_string())),
+        }
+    }
 }
 
 #[derive(
@@ -113,33 +112,34 @@ impl AdditionalRootIssueReason {
 
 pub(crate) struct AdditionalRoots {
     pub file_systems: Vec<(RcStr, OperationVc<DiskFileSystem>)>,
-    pub issues: Vec<AdditionalRootIssue>,
+    pub errors: Vec<AdditionalRootError>,
 }
 
 pub(crate) fn create_additional_root_file_systems(
-    additional_roots: &[AdditionalRootConfig],
+    additional_roots: &[Result<AdditionalRootConfig, AdditionalRootError>],
     project_root: &RcStr,
     watcher_config: DiskWatcherConfig,
     map: OperationVc<DiskFileSystemMap>,
 ) -> Result<AdditionalRoots> {
     let mut accepted: Vec<(RcStr, RcStr)> = Vec::new();
     let mut file_systems = Vec::new();
-    let mut issues = Vec::new();
+    let mut errors = Vec::new();
     for additional_root in additional_roots {
-        let canonical = match &additional_root.canonical_path {
-            Ok(path) => path.clone(),
-            Err(issue) => {
-                issues.push(issue.clone());
+        let additional_root = match additional_root {
+            Ok(additional_root) => additional_root,
+            Err(error) => {
+                errors.push(error.clone());
                 continue;
             }
         };
+        let canonical = additional_root.canonical_path.clone();
         let canonical_path = Path::new(&*canonical);
         if let Some((overlapping_key, overlapping_path)) =
             find_overlapping_root(canonical_path, project_root, &accepted)
         {
-            issues.push(AdditionalRootIssue {
+            errors.push(AdditionalRootError {
                 key: additional_root.key.clone(),
-                path: canonical,
+                configured_path: canonical,
                 reason: AdditionalRootIssueReason::OverlappingRoot {
                     key: overlapping_key,
                     path: overlapping_path,
@@ -164,7 +164,7 @@ pub(crate) fn create_additional_root_file_systems(
 
     Ok(AdditionalRoots {
         file_systems,
-        issues,
+        errors,
     })
 }
 
@@ -185,13 +185,11 @@ fn find_overlapping_root(
     })
 }
 
-pub(crate) fn emit_additional_root_issues(path: FileSystemPath, issues: Vec<AdditionalRootIssue>) {
-    for issue in issues {
-        AdditionalRootConfigIssue {
+pub(crate) fn emit_additional_root_issues(path: FileSystemPath, errors: Vec<AdditionalRootError>) {
+    for error in errors {
+        AdditionalRootIssue {
             path: path.clone(),
-            key: issue.key,
-            configured_path: issue.path,
-            reason: issue.reason,
+            error,
         }
         .resolved_cell()
         .emit();
@@ -199,16 +197,14 @@ pub(crate) fn emit_additional_root_issues(path: FileSystemPath, issues: Vec<Addi
 }
 
 #[turbo_tasks::value(shared)]
-struct AdditionalRootConfigIssue {
+struct AdditionalRootIssue {
     path: FileSystemPath,
-    key: RcStr,
-    configured_path: RcStr,
-    reason: AdditionalRootIssueReason,
+    error: AdditionalRootError,
 }
 
 #[async_trait]
 #[turbo_tasks::value_impl]
-impl Issue for AdditionalRootConfigIssue {
+impl Issue for AdditionalRootIssue {
     fn stage(&self) -> IssueStage {
         IssueStage::Config
     }
@@ -230,11 +226,11 @@ impl Issue for AdditionalRootConfigIssue {
     async fn description(&self) -> Result<Option<StyledString>> {
         Ok(Some(StyledString::Line(vec![
             StyledString::Text(rcstr!("The additional root ")),
-            StyledString::Code(self.configured_path.clone()),
+            StyledString::Code(self.error.configured_path.clone()),
             StyledString::Text(rcstr!(" configured as ")),
-            StyledString::Code(self.key.clone()),
+            StyledString::Code(self.error.key.clone()),
             StyledString::Text(rcstr!(" is invalid: ")),
-            self.reason.description(),
+            self.error.reason.description(),
         ])))
     }
 }

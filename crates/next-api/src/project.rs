@@ -96,11 +96,9 @@ use turbopack_node::execution_context::ExecutionContext;
 use turbopack_node::worker_threads_backend;
 use turbopack_nodejs::{NodeJsChunkingContext, fs::NodeModulesPathMatcher};
 
-pub use crate::additional_roots::AdditionalRootConfig;
+pub use crate::additional_roots::{AdditionalRootConfig, AdditionalRootError};
 use crate::{
-    additional_roots::{
-        AdditionalRootIssue, create_additional_root_file_systems, emit_additional_root_issues,
-    },
+    additional_roots::{create_additional_root_file_systems, emit_additional_root_issues},
     aggregate_hmr::{AggregateHmrVersion, ChunkListUpdateBuilder, DiffResult, diff_chunks_against},
     app::{AppProject, OptionAppProject},
     empty::EmptyEndpoint,
@@ -308,7 +306,7 @@ pub struct ProjectOptions {
     pub next_config: RcStr,
 
     /// Additional filesystem roots, canonicalized before entering turbo-tasks.
-    pub additional_roots: Vec<AdditionalRootConfig>,
+    pub additional_roots: Vec<Result<AdditionalRootConfig, AdditionalRootError>>,
 
     /// A map of environment variables to use when compiling code.
     pub env: Vec<(RcStr, RcStr)>,
@@ -376,7 +374,7 @@ pub struct PartialProjectOptions {
     pub next_config: Option<RcStr>,
 
     /// Additional filesystem roots, canonicalized before entering turbo-tasks.
-    pub additional_roots: Option<Vec<AdditionalRootConfig>>,
+    pub additional_roots: Option<Vec<Result<AdditionalRootConfig, AdditionalRootError>>>,
 
     /// A map of environment variables to use when compiling code.
     pub env: Option<Vec<(RcStr, RcStr)>>,
@@ -457,7 +455,7 @@ struct ProjectContainerState {
     project_file_system: OperationVc<DiskFileSystem>,
     output_file_system: OperationVc<DiskFileSystem>,
     additional_file_systems: Vec<(RcStr, OperationVc<DiskFileSystem>)>,
-    additional_root_issues: Vec<AdditionalRootIssue>,
+    additional_root_errors: Vec<AdditionalRootError>,
 }
 
 #[turbo_tasks::value(serialization = "skip", evict = "never", eq = "manual", cell = "new")]
@@ -517,7 +515,7 @@ async fn prepare_project_container_state(
         project_file_system,
         output_file_system,
         additional_file_systems: additional_roots.file_systems,
-        additional_root_issues: additional_roots.issues,
+        additional_root_errors: additional_roots.errors,
     })
 }
 
@@ -934,7 +932,7 @@ impl ProjectContainer {
         let server_hmr;
         let project_file_system;
         let output_file_system;
-        let additional_root_issues;
+        let additional_root_errors;
         {
             let state = self.state.get();
             let state = state
@@ -966,7 +964,7 @@ impl ProjectContainer {
             server_hmr = options.server_hmr;
             project_file_system = state.project_file_system;
             output_file_system = state.output_file_system;
-            additional_root_issues = state.additional_root_issues.clone();
+            additional_root_errors = state.additional_root_errors.clone();
         }
 
         let issue_path = project_file_system
@@ -975,7 +973,7 @@ impl ProjectContainer {
             .owned()
             .await?
             .join(&project_path)?;
-        emit_additional_root_issues(issue_path, additional_root_issues);
+        emit_additional_root_issues(issue_path, additional_root_errors);
 
         let root_path = ResolvedVc::cell(root_path_str);
         let dist_dir = next_config.dist_dir().owned().await?;

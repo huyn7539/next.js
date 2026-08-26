@@ -26,8 +26,8 @@ use next_api::{
         RouteOperation,
     },
     project::{
-        AdditionalRootConfig, DebugBuildPaths, DefineEnv, DraftModeOptions, PartialProjectOptions,
-        Project, ProjectContainer, ProjectOptions, WatchOptions,
+        AdditionalRootConfig, AdditionalRootError, DebugBuildPaths, DefineEnv, DraftModeOptions,
+        PartialProjectOptions, Project, ProjectContainer, ProjectOptions, WatchOptions,
     },
     project_asset_hashes_manifest::immutable_hashes_manifest_asset_if_enabled,
     route::{Endpoint, EndpointGroupKey, Route},
@@ -314,11 +314,20 @@ impl From<NapiWatchOptions> for WatchOptions {
     }
 }
 
-fn canonicalize_additional_roots(roots: Vec<NapiAdditionalRoot>) -> Vec<AdditionalRootConfig> {
+fn canonicalize_additional_roots(
+    roots: Vec<NapiAdditionalRoot>,
+) -> Vec<Result<AdditionalRootConfig, AdditionalRootError>> {
     roots
         .into_iter()
         .filter_map(|root| {
-            AdditionalRootConfig::canonicalize(root.key, root.path, root.optional.unwrap_or(false))
+            let optional = root.optional.unwrap_or(false);
+            match AdditionalRootConfig::canonicalize(root.key.clone(), &root.path) {
+                Ok(config) => Some(Ok(config)),
+                Err(_) if optional => None,
+                Err(error) => Some(Err(AdditionalRootError::from_io_error(
+                    root.key, root.path, &error,
+                ))),
+            }
         })
         .collect()
 }
