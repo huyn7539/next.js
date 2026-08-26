@@ -354,6 +354,12 @@ export interface NapiOptionEnvVar {
   value?: RcStr
 }
 
+export interface NapiAdditionalRoot {
+  key: RcStr
+  path: RcStr
+  optional?: boolean
+}
+
 /** [NapiProjectOptions] with all fields optional. */
 export interface NapiPartialProjectOptions {
   /**
@@ -372,6 +378,8 @@ export interface NapiPartialProjectOptions {
   watch?: NapiWatchOptions
   /** The contents of next.config.js, serialized to JSON. */
   nextConfig?: RcStr
+  /** Additional filesystem roots from next.config.js. */
+  additionalRoots?: Array<NapiAdditionalRoot>
   /** A map of environment variables to use when compiling code. */
   env?: Array<NapiEnvVar>
   /**
@@ -421,6 +429,8 @@ export interface NapiProjectOptions {
   watch: NapiWatchOptions
   /** The contents of next.config.js, serialized to JSON. */
   nextConfig: RcStr
+  /** Additional filesystem roots from next.config.js. */
+  additionalRoots: Array<NapiAdditionalRoot>
   /** A map of environment variables to use when compiling code. */
   env: Array<NapiEnvVar>
   /**

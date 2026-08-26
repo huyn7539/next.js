@@ -652,8 +652,12 @@ function bindingToApi(
   async function rustifyProjectOptions(
     options: ProjectOptions
   ): Promise<NapiProjectOptions> {
+    const additionalRoots = Object.entries(
+      options.nextConfig.turbopack?.additionalRoots ?? {}
+    ).map(([key, root]) => ({ key, ...root }))
     return {
       ...options,
+      additionalRoots,
       nextConfig: await serializeNextConfig(
         options.nextConfig,
         path.join(options.rootPath, options.projectPath)
@@ -665,8 +669,14 @@ function bindingToApi(
   async function rustifyPartialProjectOptions(
     options: PartialProjectOptions
   ): Promise<NapiPartialProjectOptions> {
+    const additionalRoots = options.nextConfig
+      ? Object.entries(options.nextConfig.turbopack?.additionalRoots ?? {}).map(
+          ([key, root]) => ({ key, ...root })
+        )
+      : undefined
     return {
       ...options,
+      additionalRoots,
       nextConfig:
         options.nextConfig &&
         (await serializeNextConfig(

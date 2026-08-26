@@ -26,8 +26,8 @@ use next_api::{
         RouteOperation,
     },
     project::{
-        DebugBuildPaths, DefineEnv, DraftModeOptions, PartialProjectOptions, Project,
-        ProjectContainer, ProjectOptions, WatchOptions,
+        AdditionalRootConfig, DebugBuildPaths, DefineEnv, DraftModeOptions, PartialProjectOptions,
+        Project, ProjectContainer, ProjectOptions, WatchOptions,
     },
     project_asset_hashes_manifest::immutable_hashes_manifest_asset_if_enabled,
     route::{Endpoint, EndpointGroupKey, Route},
@@ -146,6 +146,13 @@ pub struct NapiWatchOptions {
 }
 
 #[napi(object)]
+pub struct NapiAdditionalRoot {
+    pub key: RcStr,
+    pub path: RcStr,
+    pub optional: Option<bool>,
+}
+
+#[napi(object)]
 pub struct NapiProjectOptions {
     /// An absolute root path (Unix or Windows path) from which all files must be nested under.
     /// Trying to access a file outside this root will fail, so think of this as a chroot.
@@ -166,6 +173,9 @@ pub struct NapiProjectOptions {
 
     /// The contents of next.config.js, serialized to JSON.
     pub next_config: RcStr,
+
+    /// Additional filesystem roots from next.config.js.
+    pub additional_roots: Vec<NapiAdditionalRoot>,
 
     /// A map of environment variables to use when compiling code.
     pub env: Vec<NapiEnvVar>,
@@ -236,6 +246,9 @@ pub struct NapiPartialProjectOptions {
     /// The contents of next.config.js, serialized to JSON.
     pub next_config: Option<RcStr>,
 
+    /// Additional filesystem roots from next.config.js.
+    pub additional_roots: Option<Vec<NapiAdditionalRoot>>,
+
     /// A map of environment variables to use when compiling code.
     pub env: Option<Vec<NapiEnvVar>>,
 
@@ -301,8 +314,18 @@ impl From<NapiWatchOptions> for WatchOptions {
     }
 }
 
-impl From<NapiProjectOptions> for ProjectOptions {
-    fn from(val: NapiProjectOptions) -> Self {
+fn canonicalize_additional_roots(roots: Vec<NapiAdditionalRoot>) -> Vec<AdditionalRootConfig> {
+    roots
+        .into_iter()
+        .filter_map(|root| {
+            AdditionalRootConfig::canonicalize(root.key, root.path, root.optional.unwrap_or(false))
+        })
+        .collect()
+}
+
+impl NapiProjectOptions {
+    fn into_project_options(self) -> ProjectOptions {
+        let val = self;
         let NapiProjectOptions {
             root_path,
             project_path,
@@ -310,6 +333,7 @@ impl From<NapiProjectOptions> for ProjectOptions {
             dist_dir: _,
             watch,
             next_config,
+            additional_roots,
             env,
             define_env,
             dev,
@@ -331,6 +355,7 @@ impl From<NapiProjectOptions> for ProjectOptions {
             project_path,
             watch: watch.into(),
             next_config,
+            additional_roots: canonicalize_additional_roots(additional_roots),
             env: env.into_iter().map(|var| (var.name, var.value)).collect(),
             define_env: define_env.into(),
             dev,
@@ -353,13 +378,15 @@ impl From<NapiProjectOptions> for ProjectOptions {
     }
 }
 
-impl From<NapiPartialProjectOptions> for PartialProjectOptions {
-    fn from(val: NapiPartialProjectOptions) -> Self {
+impl NapiPartialProjectOptions {
+    fn into_partial_project_options(self) -> PartialProjectOptions {
+        let val = self;
         let NapiPartialProjectOptions {
             root_path,
             project_path,
             watch,
             next_config,
+            additional_roots,
             env,
             define_env,
             dev,
@@ -375,6 +402,7 @@ impl From<NapiPartialProjectOptions> for PartialProjectOptions {
             project_path,
             watch: watch.map(From::from),
             next_config,
+            additional_roots: additional_roots.map(canonicalize_additional_roots),
             env: env.map(|env| env.into_iter().map(|var| (var.name, var.value)).collect()),
             define_env: define_env.map(|env| env.into()),
             dev,
@@ -607,7 +635,7 @@ pub fn project_new<'env>(
                 });
             }
 
-            let options = ProjectOptions::from(options);
+            let options = options.into_project_options();
             let is_dev = options.dev;
             let root_path = options.root_path.clone();
             let container = turbo_tasks
@@ -747,7 +775,7 @@ pub async fn project_update(
     options: NapiPartialProjectOptions,
 ) -> napi::Result<()> {
     let ctx = &project.turbopack_ctx;
-    let options = options.into();
+    let options = options.into_partial_project_options();
     let container = project.container;
     ctx.turbo_tasks()
         .run(async move { container.update(options).await })

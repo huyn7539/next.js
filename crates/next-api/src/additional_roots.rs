@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use async_trait::async_trait;
 use bincode::{Decode, Encode};
-use next_core::next_config::additional_roots_from_json;
+use serde::{Deserialize, Serialize};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{NonLocalValue, OperationValue, OperationVc, trace::TraceRawVcs};
 use turbo_tasks_fs::{
@@ -15,7 +15,55 @@ use turbopack_core::issue::{Issue, IssueExt, IssueSeverity, IssueStage, StyledSt
 use crate::project::disk_file_system_with_options_operation;
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, NonLocalValue, OperationValue, TraceRawVcs, Encode, Decode,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    OperationValue,
+    TraceRawVcs,
+    Encode,
+    Decode,
+)]
+pub struct AdditionalRootConfig {
+    pub(crate) key: RcStr,
+    pub(crate) path: RcStr,
+    canonical_path: Result<RcStr, AdditionalRootIssue>,
+}
+
+impl AdditionalRootConfig {
+    pub fn canonicalize(key: RcStr, path: RcStr, optional: bool) -> Option<Self> {
+        let canonical_path =
+            canonicalize_to_rcstr(Path::new(&*path)).map_err(|error| AdditionalRootIssue {
+                key: key.clone(),
+                path: path.clone(),
+                reason: AdditionalRootIssueReason::Io(RcStr::from(error.to_string())),
+            });
+        if optional && canonical_path.is_err() {
+            return None;
+        }
+        Some(Self {
+            key,
+            path,
+            canonical_path,
+        })
+    }
+}
+
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    OperationValue,
+    TraceRawVcs,
+    Encode,
+    Decode,
 )]
 pub(crate) struct AdditionalRootIssue {
     key: RcStr,
@@ -24,26 +72,41 @@ pub(crate) struct AdditionalRootIssue {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, NonLocalValue, OperationValue, TraceRawVcs, Encode, Decode,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    NonLocalValue,
+    OperationValue,
+    TraceRawVcs,
+    Encode,
+    Decode,
 )]
 enum AdditionalRootIssueReason {
+    // io errors are stringified because `io::Error` does not implement the required traits
     Io(RcStr),
     OverlappingRoot { key: Option<RcStr>, path: RcStr },
 }
 
 impl AdditionalRootIssueReason {
-    fn description(&self) -> RcStr {
+    fn description(&self) -> StyledString {
         match self {
-            Self::Io(error) => error.clone(),
+            Self::Io(error) => StyledString::Text(error.clone()),
             Self::OverlappingRoot {
                 key: Some(key),
                 path,
-            } => RcStr::from(format!(
-                "the root overlaps additional root {path:?} configured as {key:?}"
-            )),
-            Self::OverlappingRoot { key: None, path } => {
-                RcStr::from(format!("the root overlaps the project root {path:?}"))
-            }
+            } => StyledString::Line(vec![
+                StyledString::Text(rcstr!("the root overlaps additional root ")),
+                StyledString::Code(path.clone()),
+                StyledString::Text(rcstr!(" configured as ")),
+                StyledString::Code(key.clone()),
+            ]),
+            Self::OverlappingRoot { key: None, path } => StyledString::Line(vec![
+                StyledString::Text(rcstr!("the root overlaps the project root ")),
+                StyledString::Code(path.clone()),
+            ]),
         }
     }
 }
@@ -53,8 +116,8 @@ pub(crate) struct AdditionalRoots {
     pub issues: Vec<AdditionalRootIssue>,
 }
 
-pub(crate) fn prepare_additional_roots(
-    next_config: &str,
+pub(crate) fn create_additional_root_file_systems(
+    additional_roots: &[AdditionalRootConfig],
     project_root: &RcStr,
     watcher_config: DiskWatcherConfig,
     map: OperationVc<DiskFileSystemMap>,
@@ -62,17 +125,11 @@ pub(crate) fn prepare_additional_roots(
     let mut accepted: Vec<(RcStr, RcStr)> = Vec::new();
     let mut file_systems = Vec::new();
     let mut issues = Vec::new();
-    for (key, config) in additional_roots_from_json(next_config)? {
-        let canonical = match canonicalize_to_rcstr(Path::new(&*config.path)) {
-            Ok(path) => path,
-            Err(error) => {
-                if !config.optional {
-                    issues.push(AdditionalRootIssue {
-                        key,
-                        path: config.path,
-                        reason: AdditionalRootIssueReason::Io(error.to_string().into()),
-                    });
-                }
+    for additional_root in additional_roots {
+        let canonical = match &additional_root.canonical_path {
+            Ok(path) => path.clone(),
+            Err(issue) => {
+                issues.push(issue.clone());
                 continue;
             }
         };
@@ -81,7 +138,7 @@ pub(crate) fn prepare_additional_roots(
             find_overlapping_root(canonical_path, project_root, &accepted)
         {
             issues.push(AdditionalRootIssue {
-                key,
+                key: additional_root.key.clone(),
                 path: canonical,
                 reason: AdditionalRootIssueReason::OverlappingRoot {
                     key: overlapping_key,
@@ -91,7 +148,7 @@ pub(crate) fn prepare_additional_roots(
             continue;
         }
         let operation = disk_file_system_with_options_operation(
-            format!("additional-root-{key}").into(),
+            format!("additional-root-{}", additional_root.key).into(),
             canonical.clone(),
             Vec::new(),
             DiskWatcherConfig {
@@ -101,8 +158,8 @@ pub(crate) fn prepare_additional_roots(
             true,
             map,
         );
-        accepted.push((key.clone(), canonical));
-        file_systems.push((key, operation));
+        accepted.push((additional_root.key.clone(), canonical));
+        file_systems.push((additional_root.key.clone(), operation));
     }
 
     Ok(AdditionalRoots {
@@ -171,14 +228,14 @@ impl Issue for AdditionalRootConfigIssue {
     }
 
     async fn description(&self) -> Result<Option<StyledString>> {
-        let reason = self.reason.description();
-        Ok(Some(StyledString::Text(
-            format!(
-                "The additional root {:?} configured as {:?} is invalid: {}",
-                self.configured_path, self.key, reason
-            )
-            .into(),
-        )))
+        Ok(Some(StyledString::Line(vec![
+            StyledString::Text(rcstr!("The additional root ")),
+            StyledString::Code(self.configured_path.clone()),
+            StyledString::Text(rcstr!(" configured as ")),
+            StyledString::Code(self.key.clone()),
+            StyledString::Text(rcstr!(" is invalid: ")),
+            self.reason.description(),
+        ])))
     }
 }
 
@@ -194,7 +251,7 @@ mod tests {
     fn io_reason_retains_the_error_message() {
         let reason = AdditionalRootIssueReason::Io(rcstr!("missing root"));
 
-        assert_eq!(reason.description(), "missing root");
+        assert_eq!(reason.description().to_unstyled_string(), "missing root");
     }
 
     #[test]
@@ -233,8 +290,8 @@ mod tests {
             path: rcstr!("/workspace/project"),
         };
         assert_eq!(
-            project.description(),
-            "the root overlaps the project root \"/workspace/project\""
+            project.description().to_unstyled_string(),
+            "the root overlaps the project root /workspace/project"
         );
 
         let additional = AdditionalRootIssueReason::OverlappingRoot {
@@ -242,8 +299,8 @@ mod tests {
             path: rcstr!("/external/packages"),
         };
         assert_eq!(
-            additional.description(),
-            "the root overlaps additional root \"/external/packages\" configured as \"packages\""
+            additional.description().to_unstyled_string(),
+            "the root overlaps additional root /external/packages configured as packages"
         );
     }
 }

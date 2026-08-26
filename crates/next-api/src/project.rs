@@ -96,9 +96,10 @@ use turbopack_node::execution_context::ExecutionContext;
 use turbopack_node::worker_threads_backend;
 use turbopack_nodejs::{NodeJsChunkingContext, fs::NodeModulesPathMatcher};
 
+pub use crate::additional_roots::AdditionalRootConfig;
 use crate::{
     additional_roots::{
-        AdditionalRootIssue, emit_additional_root_issues, prepare_additional_roots,
+        AdditionalRootIssue, create_additional_root_file_systems, emit_additional_root_issues,
     },
     aggregate_hmr::{AggregateHmrVersion, ChunkListUpdateBuilder, DiffResult, diff_chunks_against},
     app::{AppProject, OptionAppProject},
@@ -306,6 +307,9 @@ pub struct ProjectOptions {
     /// The contents of next.config.js, serialized to JSON.
     pub next_config: RcStr,
 
+    /// Additional filesystem roots, canonicalized before entering turbo-tasks.
+    pub additional_roots: Vec<AdditionalRootConfig>,
+
     /// A map of environment variables to use when compiling code.
     pub env: Vec<(RcStr, RcStr)>,
 
@@ -370,6 +374,9 @@ pub struct PartialProjectOptions {
 
     /// The contents of next.config.js, serialized to JSON.
     pub next_config: Option<RcStr>,
+
+    /// Additional filesystem roots, canonicalized before entering turbo-tasks.
+    pub additional_roots: Option<Vec<AdditionalRootConfig>>,
 
     /// A map of environment variables to use when compiling code.
     pub env: Option<Vec<(RcStr, RcStr)>>,
@@ -498,8 +505,8 @@ async fn prepare_project_container_state(
         empty_disk_file_system_map(),
     );
 
-    let additional_roots = prepare_additional_roots(
-        &options.next_config,
+    let additional_roots = create_additional_root_file_systems(
+        &options.additional_roots,
         &options.root_path,
         watcher_config,
         map,
@@ -820,6 +827,7 @@ impl ProjectContainer {
                 root_path,
                 project_path,
                 next_config,
+                additional_roots,
                 env,
                 define_env,
                 watch,
@@ -849,6 +857,9 @@ impl ProjectContainer {
             }
             if let Some(next_config) = next_config {
                 new_options.next_config = next_config;
+            }
+            if let Some(additional_roots) = additional_roots {
+                new_options.additional_roots = additional_roots;
             }
             if let Some(env) = env {
                 new_options.env = env;
