@@ -149,7 +149,7 @@ pub struct NapiWatchOptions {
 pub struct NapiAdditionalRoot {
     pub key: RcStr,
     pub path: RcStr,
-    pub optional: Option<bool>,
+    pub ignore_if_missing: Option<bool>,
 }
 
 #[napi(object)]
@@ -320,10 +320,10 @@ fn canonicalize_additional_roots(
     roots
         .into_iter()
         .filter_map(|root| {
-            let optional = root.optional.unwrap_or(false);
+            let ignore_if_missing = root.ignore_if_missing.unwrap_or(false);
             match AdditionalRootConfig::canonicalize(root.key.clone(), &root.path) {
                 Ok(config) => Some(Ok(config)),
-                Err(_) if optional => None,
+                Err(_) if ignore_if_missing => None,
                 Err(error) => Some(Err(AdditionalRootError::from_io_error(
                     root.key, root.path, &error,
                 ))),

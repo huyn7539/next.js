@@ -170,7 +170,7 @@ const zTurbopackConfig: zod.ZodType<TurbopackOptions> = z.strictObject({
       z.string(),
       z.strictObject({
         path: z.string(),
-        optional: z.boolean().optional(),
+        ignoreIfMissing: z.boolean().optional(),
       })
     )
     .optional(),

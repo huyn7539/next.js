@@ -58,7 +58,7 @@ module.exports = { value: \`linked-\${sibling.value}-\${formatUrl({ pathname: '/
   turbopack: {
     additionalRoots: {
       linkedPackages: { path: ${JSON.stringify(relativeExternalRoot)} },
-      missingOptional: { path: './missing-optional-root', optional: true },
+      missingOptional: { path: './missing-optional-root', ignoreIfMissing: true },
     },
   },
 }

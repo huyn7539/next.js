@@ -138,16 +138,16 @@ module.exports = {
       linkedPackages: { path: path.join(__dirname, '../packages') },
       pnpmStore: {
         path: path.join(os.homedir(), '.local/share/pnpm/store'),
-        optional: true,
+        ignoreIfMissing: true,
       },
     },
   },
 }
 ```
 
-Each key identifies one root. `path` can be absolute or relative to the directory where you run Next.js. `optional` defaults to `false`.
+Each key identifies one root. `path` can be absolute or relative to the directory where you run Next.js. `ignoreIfMissing` defaults to `false`.
 
-Next.js canonicalizes each path before validating it. Missing required roots and overlapping roots produce configuration errors and are excluded. Missing optional roots are silently excluded. Roots cannot overlap `turbopack.root` or one another; when multiple entries overlap, the first entry in JavaScript property order is used.
+Next.js canonicalizes each path before validating it. Missing required roots and overlapping roots produce configuration errors and are excluded. Missing roots with `ignoreIfMissing: true` are silently excluded. Roots cannot overlap `turbopack.root` or one another; when multiple entries overlap, the first entry in JavaScript property order is used.
 
 Additional roots are read-only and watched non-recursively. They only permit symlink crossings: direct relative imports that escape the project root remain unsupported.
 

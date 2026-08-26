@@ -316,7 +316,7 @@ describe('loadConfig', () => {
         customConfig: {
           turbopack: {
             additionalRoots: {
-              second: { path: './second', optional: true },
+              second: { path: './second', ignoreIfMissing: true },
               first: { path: '../first' },
             },
           },
@@ -324,7 +324,7 @@ describe('loadConfig', () => {
       })
 
       expect(Object.entries(result.turbopack?.additionalRoots ?? {})).toEqual([
-        ['second', { path: resolve('./second'), optional: true }],
+        ['second', { path: resolve('./second'), ignoreIfMissing: true }],
         ['first', { path: resolve('../first') }],
       ])
     })
