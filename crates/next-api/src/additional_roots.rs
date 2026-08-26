@@ -155,7 +155,6 @@ pub(crate) fn create_additional_root_file_systems(
                 recursive_mode: Some(DiskWatcherRecursiveMode::NonRecursive),
                 ..watcher_config
             },
-            true,
             map,
         );
         accepted.push((additional_root.key.clone(), canonical));

@@ -255,7 +255,6 @@ pub(crate) struct DiskFileSystemInner {
     #[bincode(skip)]
     effect_state_storage: EffectStateStorage,
     map: OperationVc<DiskFileSystemMap>,
-    read_only: bool,
 }
 
 impl DiskFileSystemInner {
@@ -447,28 +446,6 @@ impl DiskFileSystemInner {
             invalidator.invalidate_with_reason(&*turbo_tasks, reason)
         });
     }
-
-    #[tracing::instrument(level = "info", name = "start filesystem watching", skip_all, fields(path = %self.root))]
-    async fn start_watching_internal(self: &Arc<Self>) -> Result<()> {
-        let root_path = self.root_path().to_path_buf();
-
-        if self.read_only {
-            retry_blocking(|| std::fs::metadata(&root_path))
-                .instrument(tracing::info_span!("check root directory", name = ?root_path))
-                .concurrency_limited(&self.read_semaphore)
-                .await?;
-        } else {
-            // create the directory for writable filesystems if it doesn't exist
-            retry_blocking(|| std::fs::create_dir_all(&root_path))
-                .instrument(tracing::info_span!("create root directory", name = ?root_path))
-                .concurrency_limited(&self.write_semaphore)
-                .await?;
-        }
-
-        DiskWatcher::start_watching(self.clone()).await?;
-
-        Ok(())
-    }
 }
 
 /// `DiskFileSystem` carries serializable fields (`name`, `root`,
@@ -513,7 +490,7 @@ impl DiskFileSystem {
     }
 
     pub async fn start_watching(&self) -> Result<()> {
-        self.inner.start_watching_internal().await
+        DiskWatcher::start_watching(self.inner.clone()).await
     }
 
     pub async fn stop_watching(&self) {
@@ -763,23 +740,15 @@ impl DiskFileSystem {
     /// This API does not canonicalize itself, as that requires IO operations (e.g. symlink
     /// resolution) which should (ideally) not be cached.
     pub fn new(name: RcStr, root: Vc<RcStr>) -> Vc<Self> {
-        Self::new_with_map(name, root, false, empty_disk_file_system_map())
+        Self::new_with_map(name, root, empty_disk_file_system_map())
     }
 
     pub fn new_with_map(
         name: RcStr,
         root: Vc<RcStr>,
-        read_only: bool,
         map: OperationVc<DiskFileSystemMap>,
     ) -> Vc<Self> {
-        Self::new_internal(
-            name,
-            root,
-            Vec::new(),
-            DiskWatcherConfig::default(),
-            read_only,
-            map,
-        )
+        Self::new_internal(name, root, Vec::new(), DiskWatcherConfig::default(), map)
     }
 
     /// Create a new instance of `DiskFileSystem`.
@@ -810,7 +779,6 @@ impl DiskFileSystem {
             root,
             denied_paths,
             watcher_config,
-            false,
             empty_disk_file_system_map(),
         )
     }
@@ -820,7 +788,6 @@ impl DiskFileSystem {
         root: Vc<RcStr>,
         denied_paths: Vec<RcStr>,
         watcher_config: DiskWatcherConfig,
-        read_only: bool,
         map: OperationVc<DiskFileSystemMap>,
     ) -> Vc<Self> {
         for denied_path in &denied_paths {
@@ -830,7 +797,7 @@ impl DiskFileSystem {
                 "denied_path must be normalized: {denied_path:?}"
             );
         }
-        Self::new_internal(name, root, denied_paths, watcher_config, read_only, map)
+        Self::new_internal(name, root, denied_paths, watcher_config, map)
     }
 }
 
@@ -842,7 +809,6 @@ impl DiskFileSystem {
         root: Vc<RcStr>,
         denied_paths: Vec<RcStr>,
         watcher_config: DiskWatcherConfig,
-        read_only: bool,
         map: OperationVc<DiskFileSystemMap>,
     ) -> Result<Vc<Self>> {
         let root = root.owned().await?;
@@ -862,7 +828,6 @@ impl DiskFileSystem {
                 tokio_handle: Handle::current(),
                 effect_state_storage: EffectStateStorage::default(),
                 map,
-                read_only,
             }),
         };
 
@@ -1174,9 +1139,6 @@ impl FileSystem for DiskFileSystem {
         content: ResolvedVc<FileContent>,
     ) -> Result<()> {
         let this = self.await?;
-        if this.inner.read_only {
-            turbobail!("Cannot write to read-only filesystem: {}", this.inner.name);
-        }
         // You might be tempted to use `session_dependent` here, but `write` purely declares a side
         // effect and does not need to be reexecuted in the next session. All side effects are
         // reexecuted in general.
@@ -1399,12 +1361,6 @@ impl FileSystem for DiskFileSystem {
         // re-executed in general.
 
         let this = self.await?;
-        if this.inner.read_only {
-            turbobail!(
-                "Cannot write link to read-only filesystem: {}",
-                this.inner.name
-            );
-        }
         // Check if path is denied - if so, return an error
         if this.inner.is_path_denied(&fs_path) {
             turbobail!("Cannot write link to denied path: {fs_path}");

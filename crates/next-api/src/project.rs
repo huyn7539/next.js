@@ -497,13 +497,11 @@ async fn prepare_project_container_state(
         options.root_path.clone(),
         vec![denied_path, denied_profiles_path],
         watcher_config,
-        false,
         map,
     );
     let output_file_system = disk_file_system_operation(
         rcstr!("output"),
         options.root_path.clone(),
-        false,
         empty_disk_file_system_map(),
     );
 
@@ -651,10 +649,9 @@ fn output_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
 fn disk_file_system_operation(
     name: RcStr,
     canonical_root: RcStr,
-    read_only: bool,
     map: OperationVc<DiskFileSystemMap>,
 ) -> Vc<DiskFileSystem> {
-    DiskFileSystem::new_with_map(name, Vc::cell(canonical_root), read_only, map)
+    DiskFileSystem::new_with_map(name, Vc::cell(canonical_root), map)
 }
 
 #[turbo_tasks::function(operation, root)]
@@ -663,7 +660,6 @@ pub(crate) fn disk_file_system_with_options_operation(
     canonical_root: RcStr,
     denied_paths: Vec<RcStr>,
     mut watcher_config: DiskWatcherConfig,
-    read_only: bool,
     map: OperationVc<DiskFileSystemMap>,
 ) -> Vc<DiskFileSystem> {
     watcher_config.extended_batch_delay_matcher =
@@ -673,7 +669,6 @@ pub(crate) fn disk_file_system_with_options_operation(
         Vc::cell(canonical_root),
         denied_paths,
         watcher_config,
-        read_only,
         map,
     )
 }
