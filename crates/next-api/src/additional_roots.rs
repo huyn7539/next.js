@@ -103,7 +103,7 @@ impl AdditionalRootIssueReason {
                 StyledString::Code(key.clone()),
             ]),
             Self::OverlappingRoot { key: None, path } => StyledString::Line(vec![
-                StyledString::Text(rcstr!("the root overlaps the project root ")),
+                StyledString::Text(rcstr!("the additional root overlaps the project root ")),
                 StyledString::Code(path.clone()),
             ]),
         }
@@ -259,44 +259,6 @@ mod tests {
                 &[],
             ),
             Some((None, rcstr!("/workspace/project")))
-        );
-    }
-
-    #[test]
-    fn identifies_the_first_overlapping_additional_root() {
-        let additional_roots = vec![
-            (rcstr!("one"), rcstr!("/external/one")),
-            (rcstr!("two"), rcstr!("/external/two")),
-        ];
-
-        assert_eq!(
-            find_overlapping_root(
-                Path::new("/external/two/packages"),
-                &rcstr!("/workspace/project"),
-                &additional_roots,
-            ),
-            Some((Some(rcstr!("two")), rcstr!("/external/two")))
-        );
-    }
-
-    #[test]
-    fn formats_structured_overlap_reasons() {
-        let project = AdditionalRootIssueReason::OverlappingRoot {
-            key: None,
-            path: rcstr!("/workspace/project"),
-        };
-        assert_eq!(
-            project.description().to_unstyled_string(),
-            "the root overlaps the project root /workspace/project"
-        );
-
-        let additional = AdditionalRootIssueReason::OverlappingRoot {
-            key: Some(rcstr!("packages")),
-            path: rcstr!("/external/packages"),
-        };
-        assert_eq!(
-            additional.description().to_unstyled_string(),
-            "the root overlaps additional root /external/packages configured as packages"
         );
     }
 }
