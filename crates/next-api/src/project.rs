@@ -467,6 +467,10 @@ pub struct ProjectContainer {
     update_lock: tokio::sync::Mutex<()>,
 }
 
+/// Constructs a new project container state without mutating the container.
+///
+/// The caller must hold [`ProjectContainer::update_lock`] until the returned state has been
+/// published with [`publish_project_container_state`].
 async fn prepare_project_container_state(
     container: ResolvedVc<ProjectContainer>,
     options: ProjectOptions,
@@ -519,12 +523,17 @@ async fn prepare_project_container_state(
     })
 }
 
+/// Activates a prepared state, updating filesystem watchers before and after replacing the current
+/// container state.
+///
+/// `old_state` must be the snapshot taken while holding [`ProjectContainer::update_lock`] before
+/// preparing `new_state`. The caller must continue holding the lock while calling this function.
 async fn publish_project_container_state(
     container: ResolvedVc<ProjectContainer>,
+    old_state: Option<ProjectContainerState>,
     new_state: ProjectContainerState,
 ) -> Result<()> {
     let this = container.await?;
-    let old_state = this.state.get_untracked().clone();
     let old_watch = old_state
         .as_ref()
         .is_some_and(|state| state.options.watch.enable);
@@ -791,9 +800,10 @@ impl ProjectContainer {
         let span_clone = span.clone();
         async move {
             let _guard = this.update_lock.lock().await;
+            let old_state = this.state.get_untracked().clone();
             let container = this_op.resolve().strongly_consistent().await?;
             let state = prepare_project_container_state(container, options).await?;
-            publish_project_container_state(container, state).await
+            publish_project_container_state(container, old_state, state).await
         }
         .instrument(span_clone)
         .await
@@ -840,12 +850,12 @@ impl ProjectContainer {
             } = options;
 
             let _guard = this.update_lock.lock().await;
-            let mut new_options = this
+            let old_state = this
                 .state
                 .get_untracked()
-                .as_ref()
-                .map(|state| state.options.clone())
+                .clone()
                 .context("ProjectContainer need to be initialized with initialize()")?;
+            let mut new_options = old_state.options.clone();
 
             if let Some(root_path) = root_path {
                 new_options.root_path = canonicalize_to_rcstr(Path::new(&*root_path))?;
@@ -893,15 +903,13 @@ impl ProjectContainer {
                 new_options.debug_build_paths = Some(debug_build_paths);
             }
 
-            if let Some(old_state) = &*this.state.get_untracked() {
-                span.record(
-                    "env_diff",
-                    define_env_diff_report(&old_state.options.define_env, &new_options.define_env)
-                        .as_str(),
-                );
-            }
+            span.record(
+                "env_diff",
+                define_env_diff_report(&old_state.options.define_env, &new_options.define_env)
+                    .as_str(),
+            );
             let state = prepare_project_container_state(self, new_options).await?;
-            publish_project_container_state(self, state).await
+            publish_project_container_state(self, Some(old_state), state).await
         }
         .instrument(span_clone)
         .await
