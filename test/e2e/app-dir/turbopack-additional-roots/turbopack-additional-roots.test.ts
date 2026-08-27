@@ -1,4 +1,4 @@
-import { nextTestSetup } from 'e2e-utils'
+import { isNextStart, nextTestSetup } from 'e2e-utils'
 import fs from 'fs-extra'
 import path from 'path'
 import { retry } from 'next-test-utils'
@@ -27,10 +27,10 @@ import { retry } from 'next-test-utils'
 
     beforeAll(async () => {
       externalRoot = path.resolve(next.testDir, '../additional-root')
-      linkedPackage = path.join(externalRoot, 'packages', 'linked')
+      linkedPackage = path.join(externalRoot, 'packages/linked')
 
       await fs.copy(
-        path.join(__dirname, 'fixtures', 'additional-root'),
+        path.join(__dirname, 'fixtures/additional-root'),
         externalRoot
       )
 
@@ -71,6 +71,59 @@ import { retry } from 'next-test-utils'
             })
           }
         )
+      })
+    }
+
+    if (isNextStart) {
+      it('can rebuild after changing the additional roots config', async () => {
+        const browser = await next.browser('/')
+        expect(await browser.elementByCss('#value').text()).toBe(
+          'linked-initial-/next-plugin'
+        )
+
+        await next.stop()
+
+        const updatedExternalRoot = path.resolve(
+          next.testDir,
+          '../updated-additional-root'
+        )
+        const updatedLinkedPackage = path.join(
+          updatedExternalRoot,
+          'packages/linked'
+        )
+        const link = path.join(next.testDir, 'linked')
+
+        await fs.move(externalRoot, updatedExternalRoot)
+        await fs.remove(link)
+        await fs.symlink(updatedLinkedPackage, link, 'junction')
+
+        try {
+          await next.patchFile(
+            'next.config.js',
+            (content) => {
+              expect(content).toContain('../additional-root')
+              return content.replace(
+                '../additional-root',
+                '../updated-additional-root'
+              )
+            },
+            async () => {
+              const { exitCode } = await next.build()
+              expect(exitCode).toBe(0)
+
+              await next.start()
+              const browser = await next.browser('/')
+              expect(await browser.elementByCss('#value').text()).toBe(
+                'linked-initial-/next-plugin'
+              )
+            }
+          )
+        } finally {
+          await next.stop()
+          await fs.remove(link)
+          await fs.move(updatedExternalRoot, externalRoot)
+          await fs.symlink(linkedPackage, link, 'junction')
+        }
       })
     }
   }
