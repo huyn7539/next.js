@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{iter, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -590,19 +590,29 @@ pub(crate) fn disk_file_system_with_options_operation(
 async fn disk_file_system_map_operation(
     container: ResolvedVc<ProjectContainer>,
 ) -> Result<Vc<DiskFileSystemMap>> {
-    let container = container.await?;
-    let state = container
-        .state
-        .get()
-        .clone()
-        .context("ProjectContainer needs to be initialized with initialize()")?;
-    let mut filesystems = Vec::with_capacity(1 + state.additional_file_systems.len());
-    let project = state.project_file_system.connect().to_resolved().await?;
-    filesystems.push((project.await?.root().clone(), project));
-    for (_, operation) in state.additional_file_systems {
-        let fs = operation.connect().to_resolved().await?;
-        filesystems.push((fs.await?.root().clone(), fs));
-    }
+    let (project_file_system, additional_file_systems) = {
+        let container = container.await?;
+        let state = container.state.get();
+        let state = state
+            .as_ref()
+            .context("Unexpected: ProjectContainer is uninitialized")?;
+        (
+            state.project_file_system,
+            state.additional_file_systems.clone(),
+        )
+    };
+    let filesystems = iter::once(project_file_system)
+        .chain(
+            additional_file_systems
+                .into_iter()
+                .map(|(_, operation)| operation),
+        )
+        .map(async |operation| {
+            let fs = operation.connect().to_resolved().await?;
+            Ok((fs.await?.root().clone(), fs))
+        })
+        .try_join()
+        .await?;
     Ok(disk_file_system_map(filesystems))
 }
 
@@ -1455,8 +1465,8 @@ impl Project {
         let result = GraphEntries::concatenate(
             endpoint_entries
                 .into_iter()
-                .chain(std::iter::once(self.client_main_modules().owned().await?))
-                .chain(std::iter::once(GraphEntries::new(
+                .chain(iter::once(self.client_main_modules().owned().await?))
+                .chain(iter::once(GraphEntries::new(
                     vec![],
                     // The superset of what any endpoint traces, so that these modules and their
                     // references are part of the graph. Which endpoint actually traces them is
