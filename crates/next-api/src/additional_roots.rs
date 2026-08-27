@@ -112,7 +112,7 @@ impl AdditionalRootIssueReason {
 }
 
 /// Constructed file systems and errors for the configured additional roots.
-pub(crate) struct AdditionalRoots {
+pub(crate) struct AdditionalRootFileSystems {
     pub file_systems: Vec<(RcStr, OperationVc<DiskFileSystem>)>,
     pub errors: Vec<AdditionalRootError>,
 }
@@ -122,7 +122,7 @@ pub(crate) fn create_additional_root_file_systems(
     project_root: &RcStr,
     watcher_config: DiskWatcherConfig,
     map: OperationVc<DiskFileSystemMap>,
-) -> Result<AdditionalRoots> {
+) -> Result<AdditionalRootFileSystems> {
     let mut accepted: Vec<(RcStr, RcStr)> = Vec::new();
     let mut file_systems = Vec::new();
     let mut errors = Vec::new();
@@ -168,7 +168,7 @@ pub(crate) fn create_additional_root_file_systems(
         file_systems.push((additional_root.key.clone(), operation));
     }
 
-    Ok(AdditionalRoots {
+    Ok(AdditionalRootFileSystems {
         file_systems,
         errors,
     })
