@@ -61,10 +61,7 @@ pub use crate::{
         WriteLinkTargetType,
     },
     disk::{DiskFileSystem, canonicalize_to_rcstr, validate_path_length},
-    fs_map::{
-        DiskFileSystemMap, disk_file_system_map, empty_disk_file_system_map,
-        empty_disk_file_system_map_operation,
-    },
+    fs_map::{DiskFileSystemMap, disk_file_system_map, empty_disk_file_system_map_operation},
     null_fs::NullFileSystem,
     path::{
         FileSystemPath, FileSystemPathOption, RealPathError, RealPathErrorType,

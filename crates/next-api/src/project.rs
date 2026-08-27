@@ -46,7 +46,7 @@ use turbo_tasks::{
 use turbo_tasks_env::{EnvMap, ProcessEnv};
 use turbo_tasks_fs::{
     DiskFileSystem, DiskFileSystemMap, DiskWatcherConfig, FileContent, FileSystem, FileSystemPath,
-    VirtualFileSystem, disk_file_system_map, empty_disk_file_system_map, invalidation,
+    VirtualFileSystem, disk_file_system_map, empty_disk_file_system_map_operation, invalidation,
 };
 use turbo_unix_path::join_path;
 use turbopack::{
@@ -472,7 +472,7 @@ async fn prepare_project_container_state(
     let output_file_system = disk_file_system_operation(
         rcstr!("output"),
         options.root_path.clone(),
-        empty_disk_file_system_map(),
+        empty_disk_file_system_map_operation(),
     );
 
     let additional_roots = create_additional_root_file_systems(
@@ -497,7 +497,7 @@ async fn prepare_project_container_state(
         }
     }
     let project_fs = project_file_system.read_strongly_consistent().await?;
-    if watch {
+    if options.watch.enable {
         project_fs.start_watching().await?;
     } else {
         project_fs.invalidate_with_reason(|path| invalidation::Initialize {

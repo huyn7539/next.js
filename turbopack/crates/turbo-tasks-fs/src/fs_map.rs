@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use turbo_rcstr::RcStr;
-use turbo_tasks::{OperationVc, ResolvedVc, Vc};
+use turbo_tasks::{ResolvedVc, Vc};
 use turbo_unix_path::sys_to_unix;
 
 use crate::{DiskFileSystem, FileSystemPath};
@@ -40,10 +40,6 @@ pub fn disk_file_system_map(
 #[turbo_tasks::function(operation)]
 pub fn empty_disk_file_system_map_operation() -> Vc<DiskFileSystemMap> {
     DiskFileSystemMap(Vec::new()).cell()
-}
-
-pub fn empty_disk_file_system_map() -> OperationVc<DiskFileSystemMap> {
-    empty_disk_file_system_map_operation()
 }
 
 #[cfg(test)]

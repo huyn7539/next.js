@@ -38,7 +38,7 @@ use crate::{
     AnyhowWrapper, DiskFileSystemMap, File, FileComparison, FileContent, FileMeta, FileSystem,
     FileSystemPath, LinkContent, LinkTarget, PersistedFileContent, RawDirectoryContent,
     RawDirectoryEntry, WriteLinkContent, WriteLinkTarget, WriteLinkTargetType,
-    empty_disk_file_system_map,
+    empty_disk_file_system_map_operation,
     invalidation::Write,
     invalidator_map::InvalidatorMap,
     mutex_map::MutexMap,
@@ -740,7 +740,7 @@ impl DiskFileSystem {
     /// This API does not canonicalize itself, as that requires IO operations (e.g. symlink
     /// resolution) which should (ideally) not be cached.
     pub fn new(name: RcStr, root: Vc<RcStr>) -> Vc<Self> {
-        Self::new_with_map(name, root, empty_disk_file_system_map())
+        Self::new_with_map(name, root, empty_disk_file_system_map_operation())
     }
 
     pub fn new_with_map(
@@ -779,7 +779,7 @@ impl DiskFileSystem {
             root,
             denied_paths,
             watcher_config,
-            empty_disk_file_system_map(),
+            empty_disk_file_system_map_operation(),
         )
     }
 
