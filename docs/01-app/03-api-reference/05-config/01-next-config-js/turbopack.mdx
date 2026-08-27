@@ -126,20 +126,15 @@ For symlinked dependencies, you can instead keep the project root narrow and con
 
 ### Additional roots
 
-`additionalRoots` allows Turbopack to follow symbolic links whose targets are outside `turbopack.root`. It is useful for `npm link` and package-manager stores that live outside the project, including pnpm's Global Virtual Store.
+`additionalRoots` allows Turbopack to follow symbolic links whose targets are outside `turbopack.root`. It is useful for linked packages that live outside the project.
 
 ```js filename="next.config.js"
 const path = require('path')
-const os = require('os')
 
 module.exports = {
   turbopack: {
     additionalRoots: {
       linkedPackages: { path: path.join(__dirname, '../packages') },
-      pnpmStore: {
-        path: path.join(os.homedir(), '.local/share/pnpm/store'),
-        ignoreIfMissing: true,
-      },
     },
   },
 }
