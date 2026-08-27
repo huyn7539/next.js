@@ -481,17 +481,9 @@ async fn prepare_project_container_state(
         watcher_config,
         map,
     )?;
+    let watch = options.watch.enable;
 
-    let state = ProjectContainerState {
-        options,
-        project_file_system,
-        output_file_system,
-        additional_file_systems: additional_roots.file_systems,
-        additional_root_errors: additional_roots.errors,
-    };
-    let watch = state.options.watch.enable;
-
-    for (_, operation) in &state.additional_file_systems {
+    for (_, operation) in &additional_roots.file_systems {
         if watch {
             let fs = operation.read_strongly_consistent().await?;
             fs.start_watching().await?;
@@ -504,7 +496,7 @@ async fn prepare_project_container_state(
                 });
         }
     }
-    let project_fs = state.project_file_system.read_strongly_consistent().await?;
+    let project_fs = project_file_system.read_strongly_consistent().await?;
     if watch {
         project_fs.start_watching().await?;
     } else {
@@ -512,15 +504,20 @@ async fn prepare_project_container_state(
             path: RcStr::from(path.to_string_lossy()),
         });
     }
-    state
-        .output_file_system
+    output_file_system
         .read_strongly_consistent()
         .await?
         .invalidate_with_reason(|path| invalidation::Initialize {
             path: RcStr::from(path.to_string_lossy()),
         });
 
-    container.await?.state.set(Some(state));
+    container.await?.state.set(Some(ProjectContainerState {
+        options,
+        project_file_system,
+        output_file_system,
+        additional_file_systems: additional_roots.file_systems,
+        additional_root_errors: additional_roots.errors,
+    }));
     Ok(())
 }
 
