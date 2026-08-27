@@ -1,4 +1,8 @@
-use std::{iter, path::Path, time::Duration};
+use std::{
+    iter,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -643,11 +647,11 @@ async fn disk_file_system_map_operation(
         )
         .map(async |operation| {
             let fs = operation.connect().to_resolved().await?;
-            Ok((fs.await?.root().clone(), fs))
+            Ok((PathBuf::from(&*fs.await?.root()), fs))
         })
         .try_join()
         .await?;
-    Ok(DiskFileSystemMap(filesystems).cell())
+    Ok(DiskFileSystemMap(filesystems.into_iter().collect()).cell())
 }
 
 enum EnvDiffType {
