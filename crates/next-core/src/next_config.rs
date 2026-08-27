@@ -605,9 +605,6 @@ pub enum RemotePatternProtocol {
 pub struct TurbopackConfig {
     #[serde(default)]
     #[bincode(with = "turbo_bincode::indexmap")]
-    pub additional_roots: FxIndexMap<RcStr, AdditionalRootConfig>,
-    #[serde(default)]
-    #[bincode(with = "turbo_bincode::indexmap")]
     pub rules: FxIndexMap<RcStr, RuleConfigCollection>,
     #[bincode(with = "turbo_bincode::serde_self_describing")]
     pub resolve_alias: Option<FxIndexMap<RcStr, JsonValue>>,
@@ -617,25 +614,8 @@ pub struct TurbopackConfig {
     /// Issue patterns to ignore (suppress) from Turbopack output.
     #[serde(default)]
     pub ignore_issue: Option<Vec<TurbopackIgnoreIssueRule>>,
-}
-
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Deserialize,
-    TraceRawVcs,
-    NonLocalValue,
-    OperationValue,
-    Encode,
-    Decode,
-)]
-#[serde(rename_all = "camelCase")]
-pub struct AdditionalRootConfig {
-    pub path: RcStr,
-    #[serde(default)]
-    pub optional: bool,
+    // `additionalRoots` is extracted from the Next.js config and passed separately through
+    // project options before this config is deserialized.
 }
 
 #[derive(
