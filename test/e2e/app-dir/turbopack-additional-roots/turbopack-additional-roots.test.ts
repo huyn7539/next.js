@@ -14,7 +14,7 @@ import { retry } from 'next-test-utils'
             linkedPackages: { path: '../additional-root' },
             missingOptional: {
               path: './missing-optional-root',
-              ignoreIfMissing: true,
+              ignoreIfMissing: false,
             },
           },
         },

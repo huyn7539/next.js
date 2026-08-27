@@ -227,27 +227,11 @@ pub struct NapiProjectOptions {
     pub server_hmr: Option<bool>,
 }
 
-/// [NapiProjectOptions] with all fields optional.
+/// The project options that may change without restarting the process.
 #[napi(object)]
 pub struct NapiPartialProjectOptions {
-    /// An absolute root path  (Unix or Windows path) from which all files must be nested under.
-    /// Trying to access a file outside this root will fail, so think of this as a chroot.
-    /// E.g. `/home/user/projects/my-repo`.
-    pub root_path: Option<RcStr>,
-
-    /// A path which contains the app/pages directories, relative to [`Project::root_path`], always
-    /// a Unix path.
-    /// E.g. `apps/my-app`
-    pub project_path: Option<RcStr>,
-
-    /// Filesystem watcher options.
-    pub watch: Option<NapiWatchOptions>,
-
     /// The contents of next.config.js, serialized to JSON.
     pub next_config: Option<RcStr>,
-
-    /// Additional filesystem roots from next.config.js.
-    pub additional_roots: Option<Vec<NapiAdditionalRoot>>,
 
     /// A map of environment variables to use when compiling code.
     pub env: Option<Vec<NapiEnvVar>>,
@@ -391,11 +375,7 @@ impl NapiPartialProjectOptions {
     fn into_partial_project_options(self) -> PartialProjectOptions {
         let val = self;
         let NapiPartialProjectOptions {
-            root_path,
-            project_path,
-            watch,
             next_config,
-            additional_roots,
             env,
             define_env,
             dev,
@@ -407,11 +387,7 @@ impl NapiPartialProjectOptions {
             write_routes_hashes_manifest,
         } = val;
         PartialProjectOptions {
-            root_path,
-            project_path,
-            watch: watch.map(From::from),
             next_config,
-            additional_roots: additional_roots.map(canonicalize_additional_roots),
             env: env.map(|env| env.into_iter().map(|var| (var.name, var.value)).collect()),
             define_env: define_env.map(|env| env.into()),
             dev,

@@ -479,12 +479,7 @@ export interface ProjectOptions
 }
 
 export interface PartialProjectOptions
-  extends Omit<
-    NapiPartialProjectOptions,
-    'nextConfig' | 'additionalRoots' | 'env'
-  > {
-  rootPath: NapiProjectOptions['rootPath']
-  projectPath: NapiProjectOptions['projectPath']
+  extends Omit<NapiPartialProjectOptions, 'nextConfig' | 'env'> {
   /**
    * The next.config.js contents.
    */

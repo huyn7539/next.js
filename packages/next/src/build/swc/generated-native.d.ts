@@ -360,26 +360,10 @@ export interface NapiOptionEnvVar {
   value?: RcStr
 }
 
-/** [NapiProjectOptions] with all fields optional. */
+/** The project options that may change without restarting the process. */
 export interface NapiPartialProjectOptions {
-  /**
-   * An absolute root path  (Unix or Windows path) from which all files must be nested under.
-   * Trying to access a file outside this root will fail, so think of this as a chroot.
-   * E.g. `/home/user/projects/my-repo`.
-   */
-  rootPath?: RcStr
-  /**
-   * A path which contains the app/pages directories, relative to [`Project::root_path`], always
-   * a Unix path.
-   * E.g. `apps/my-app`
-   */
-  projectPath?: RcStr
-  /** Filesystem watcher options. */
-  watch?: NapiWatchOptions
   /** The contents of next.config.js, serialized to JSON. */
   nextConfig?: RcStr
-  /** Additional filesystem roots from next.config.js. */
-  additionalRoots?: Array<NapiAdditionalRoot>
   /** A map of environment variables to use when compiling code. */
   env?: Array<NapiEnvVar>
   /**

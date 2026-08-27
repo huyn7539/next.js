@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -46,8 +46,7 @@ use turbo_tasks::{
 use turbo_tasks_env::{EnvMap, ProcessEnv};
 use turbo_tasks_fs::{
     DiskFileSystem, DiskFileSystemMap, DiskWatcherConfig, FileContent, FileSystem, FileSystemPath,
-    VirtualFileSystem, canonicalize_to_rcstr, disk_file_system_map, empty_disk_file_system_map,
-    invalidation,
+    VirtualFileSystem, disk_file_system_map, empty_disk_file_system_map, invalidation,
 };
 use turbo_unix_path::join_path;
 use turbopack::{
@@ -370,19 +369,15 @@ pub struct ProjectOptions {
     pub server_hmr: bool,
 }
 
-/// A version of [`ProjectOptions`] where every field is wrapped in [`Option`]. Used by
+/// The subset of [`ProjectOptions`] that may change without restarting the process. Used by
 /// [`ProjectContainer::update`].
 ///
 /// Refer to [`ProjectOptions`] for documentation on this struct's fields.
 #[derive(Default)]
 pub struct PartialProjectOptions {
-    pub root_path: Option<RcStr>,
-    pub project_path: Option<RcStr>,
     pub next_config: Option<RcStr>,
-    pub additional_roots: Option<Vec<Result<AdditionalRootConfig, AdditionalRootError>>>,
     pub env: Option<Vec<(RcStr, RcStr)>>,
     pub define_env: Option<DefineEnv>,
-    pub watch: Option<WatchOptions>,
     pub dev: Option<bool>,
     pub encryption_key: Option<RcStr>,
     pub build_id: Option<RcStr>,
@@ -442,18 +437,14 @@ pub struct ProjectContainer {
     name: RcStr,
     state: State<Option<ProjectContainerState>>,
     versioned_content_map: Option<ResolvedVc<VersionedContentMap>>,
-    #[turbo_tasks(trace_ignore, debug_ignore)]
-    update_lock: tokio::sync::Mutex<()>,
 }
 
-/// Constructs a new project container state without mutating the container.
-///
-/// The caller must hold [`ProjectContainer::update_lock`] until the returned state has been
-/// published with [`publish_project_container_state`].
+/// Constructs and activates the initial project container state, including its filesystem
+/// watchers.
 async fn prepare_project_container_state(
     container: ResolvedVc<ProjectContainer>,
     options: ProjectOptions,
-) -> Result<ProjectContainerState> {
+) -> Result<()> {
     let map = disk_file_system_map_operation(container);
     let config_json: serde_json::Value = serde_json::from_str(&options.next_config)?;
     let dist_dir_root = config_json
@@ -491,42 +482,20 @@ async fn prepare_project_container_state(
         map,
     )?;
 
-    Ok(ProjectContainerState {
+    let state = ProjectContainerState {
         options,
         project_file_system,
         output_file_system,
         additional_file_systems: additional_roots.file_systems,
         additional_root_errors: additional_roots.errors,
-    })
-}
+    };
+    let watch = state.options.watch.enable;
 
-/// Activates a prepared state, updating filesystem watchers before and after replacing the current
-/// container state.
-///
-/// `old_state` must be the snapshot taken while holding [`ProjectContainer::update_lock`] before
-/// preparing `new_state`. The caller must continue holding the lock while calling this function.
-async fn publish_project_container_state(
-    container: ResolvedVc<ProjectContainer>,
-    old_state: Option<ProjectContainerState>,
-    new_state: ProjectContainerState,
-) -> Result<()> {
-    let this = container.await?;
-    let old_watch = old_state
-        .as_ref()
-        .is_some_and(|state| state.options.watch.enable);
-    let new_watch = new_state.options.watch.enable;
-
-    let old_operations: FxHashMap<_, _> = old_state
-        .as_ref()
-        .map(|state| state.additional_file_systems.iter().cloned().collect())
-        .unwrap_or_default();
-    let mut prepared = Vec::new();
-    for (key, operation) in &new_state.additional_file_systems {
-        if new_watch && (!old_watch || old_operations.get(key) != Some(operation)) {
+    for (_, operation) in &state.additional_file_systems {
+        if watch {
             let fs = operation.read_strongly_consistent().await?;
             fs.start_watching().await?;
-            prepared.push(*operation);
-        } else if !new_watch {
+        } else {
             operation
                 .read_strongly_consistent()
                 .await?
@@ -535,23 +504,15 @@ async fn publish_project_container_state(
                 });
         }
     }
-    let project_fs = new_state
-        .project_file_system
-        .read_strongly_consistent()
-        .await?;
-    if new_watch
-        && (!old_watch
-            || old_state
-                .as_ref()
-                .is_none_or(|state| state.project_file_system != new_state.project_file_system))
-    {
+    let project_fs = state.project_file_system.read_strongly_consistent().await?;
+    if watch {
         project_fs.start_watching().await?;
-    } else if !new_watch {
+    } else {
         project_fs.invalidate_with_reason(|path| invalidation::Initialize {
             path: RcStr::from(path.to_string_lossy()),
         });
     }
-    new_state
+    state
         .output_file_system
         .read_strongly_consistent()
         .await?
@@ -559,33 +520,7 @@ async fn publish_project_container_state(
             path: RcStr::from(path.to_string_lossy()),
         });
 
-    this.state.set(Some(new_state.clone()));
-
-    if let Some(old_state) = old_state {
-        for (key, operation) in old_state.additional_file_systems {
-            let unchanged = new_state
-                .additional_file_systems
-                .iter()
-                .any(|(new_key, new_operation)| new_key == &key && new_operation == &operation);
-            if old_watch && (!new_watch || !unchanged) {
-                operation
-                    .read_strongly_consistent()
-                    .await?
-                    .stop_watching()
-                    .await;
-            }
-        }
-        if old_watch
-            && (!new_watch || old_state.project_file_system != new_state.project_file_system)
-        {
-            old_state
-                .project_file_system
-                .read_strongly_consistent()
-                .await?
-                .stop_watching()
-                .await;
-        }
-    }
+    container.await?.state.set(Some(state));
     Ok(())
 }
 
@@ -603,7 +538,6 @@ impl ProjectContainer {
                 None
             },
             state: State::new(None),
-            update_lock: tokio::sync::Mutex::new(()),
         }
         .cell())
     }
@@ -773,11 +707,8 @@ impl ProjectContainer {
         );
         let span_clone = span.clone();
         async move {
-            let _guard = this.update_lock.lock().await;
-            let old_state = this.state.get_untracked().clone();
             let container = this_op.resolve().strongly_consistent().await?;
-            let state = prepare_project_container_state(container, options).await?;
-            publish_project_container_state(container, old_state, state).await
+            prepare_project_container_state(container, options).await
         }
         .instrument(span_clone)
         .await
@@ -806,13 +737,9 @@ impl ProjectContainer {
                 .read_strongly_consistent()
                 .await?;
             let PartialProjectOptions {
-                root_path,
-                project_path,
                 next_config,
-                additional_roots,
                 env,
                 define_env,
-                watch,
                 dev,
                 encryption_key,
                 build_id,
@@ -823,67 +750,54 @@ impl ProjectContainer {
                 debug_build_paths,
             } = options;
 
-            let _guard = this.update_lock.lock().await;
-            let old_state = this
-                .state
-                .get_untracked()
-                .clone()
+            // Filesystem roots and watcher options are initialization-only. Changing them requires
+            // restarting the process so their process-local watchers can be recreated safely.
+            let mut state = this.state.get_untracked();
+            let state = state
+                .as_mut()
                 .context("ProjectContainer need to be initialized with initialize()")?;
-            let mut new_options = old_state.options.clone();
+            let old_define_env = state.options.define_env.clone();
+            let options = &mut state.options;
 
-            if let Some(root_path) = root_path {
-                new_options.root_path = canonicalize_to_rcstr(Path::new(&*root_path))?;
-            }
-            if let Some(project_path) = project_path {
-                new_options.project_path = project_path;
-            }
             if let Some(next_config) = next_config {
-                new_options.next_config = next_config;
-            }
-            if let Some(additional_roots) = additional_roots {
-                new_options.additional_roots = additional_roots;
+                options.next_config = next_config;
             }
             if let Some(env) = env {
-                new_options.env = env;
+                options.env = env;
             }
             if let Some(define_env) = define_env {
-                new_options.define_env = define_env;
-            }
-            if let Some(watch) = watch {
-                new_options.watch = watch;
+                options.define_env = define_env;
             }
             if let Some(dev) = dev {
-                new_options.dev = dev;
+                options.dev = dev;
             }
             if let Some(encryption_key) = encryption_key {
-                new_options.encryption_key = encryption_key;
+                options.encryption_key = encryption_key;
             }
             if let Some(build_id) = build_id {
-                new_options.build_id = build_id;
+                options.build_id = build_id;
             }
             if let Some(preview_props) = preview_props {
-                new_options.preview_props = preview_props;
+                options.preview_props = preview_props;
             }
             if let Some(browserslist_query) = browserslist_query {
-                new_options.browserslist_query = browserslist_query;
+                options.browserslist_query = browserslist_query;
             }
             if let Some(no_mangling) = no_mangling {
-                new_options.no_mangling = no_mangling;
+                options.no_mangling = no_mangling;
             }
             if let Some(write_routes_hashes_manifest) = write_routes_hashes_manifest {
-                new_options.write_routes_hashes_manifest = write_routes_hashes_manifest;
+                options.write_routes_hashes_manifest = write_routes_hashes_manifest;
             }
             if let Some(debug_build_paths) = debug_build_paths {
-                new_options.debug_build_paths = Some(debug_build_paths);
+                options.debug_build_paths = Some(debug_build_paths);
             }
 
             span.record(
                 "env_diff",
-                define_env_diff_report(&old_state.options.define_env, &new_options.define_env)
-                    .as_str(),
+                define_env_diff_report(&old_define_env, &options.define_env).as_str(),
             );
-            let state = prepare_project_container_state(self, new_options).await?;
-            publish_project_container_state(self, Some(old_state), state).await
+            Ok(())
         }
         .instrument(span_clone)
         .await

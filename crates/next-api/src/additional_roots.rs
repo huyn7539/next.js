@@ -14,6 +14,7 @@ use turbopack_core::issue::{Issue, IssueExt, IssueSeverity, IssueStage, StyledSt
 
 use crate::project::disk_file_system_with_options_operation;
 
+/// A named additional filesystem root with a canonicalized path.
 #[derive(
     Clone,
     Debug,
@@ -27,7 +28,6 @@ use crate::project::disk_file_system_with_options_operation;
     Encode,
     Decode,
 )]
-/// A named additional filesystem root with a canonicalized path.
 pub struct AdditionalRootConfig {
     pub(crate) key: RcStr,
     canonical_path: RcStr,
