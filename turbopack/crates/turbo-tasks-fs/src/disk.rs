@@ -38,7 +38,6 @@ use crate::{
     AnyhowWrapper, DiskFileSystemMap, File, FileComparison, FileContent, FileMeta, FileSystem,
     FileSystemPath, LinkContent, LinkTarget, PersistedFileContent, RawDirectoryContent,
     RawDirectoryEntry, WriteLinkContent, WriteLinkTarget, WriteLinkTargetType,
-    empty_disk_file_system_map_operation,
     invalidation::Write,
     invalidator_map::InvalidatorMap,
     mutex_map::MutexMap,
@@ -734,56 +733,36 @@ pub(crate) fn format_absolute_fs_path(path: &Path, name: &str, root_path: &Path)
 impl DiskFileSystem {
     /// Create a new instance of `DiskFileSystem`.
     ///
-    /// `name` is a display name for the filesystem. This should be unique. `root` is the
-    /// [canonicalized][std::fs::canonicalize] root of the filesystem.
+    /// `name` is a display name for the filesystem. This should be unique.
+    ///
+    /// `root` is the [canonicalized][std::fs::canonicalize] root of the filesystem. It should have
+    /// a stable [cell identity][`ResolvedVc`] to avoid invalidating every path if the root changes.
     ///
     /// This API does not canonicalize itself, as that requires IO operations (e.g. symlink
     /// resolution) which should (ideally) not be cached.
     pub fn new(name: RcStr, root: Vc<RcStr>) -> Vc<Self> {
-        Self::new_with_map(name, root, empty_disk_file_system_map_operation())
-    }
-
-    pub fn new_with_map(
-        name: RcStr,
-        root: Vc<RcStr>,
-        map: OperationVc<DiskFileSystemMap>,
-    ) -> Vc<Self> {
-        Self::new_internal(name, root, Vec::new(), DiskWatcherConfig::default(), map)
-    }
-
-    /// Create a new instance of `DiskFileSystem`.
-    ///
-    /// `name` is a display name for the filesystem. This should be unique. `root` is the
-    /// [canonicalized][std::fs::canonicalize] root of the filesystem.
-    ///
-    /// This API does not canonicalize itself, as that requires IO operations (e.g. symlink
-    /// resolution) which should (ideally) not be cached.
-    ///
-    /// `denied_paths` is a list of paths that are not allowed to be accessed or navigated to. These
-    /// must be normalized unix-style paths, non-empty and relative to the fs root.
-    pub fn new_with_options(
-        name: RcStr,
-        root: Vc<RcStr>,
-        denied_paths: Vec<RcStr>,
-        watcher_config: DiskWatcherConfig,
-    ) -> Vc<Self> {
-        for denied_path in &denied_paths {
-            debug_assert!(!denied_path.is_empty(), "denied_path must not be empty");
-            debug_assert!(
-                normalize_path(denied_path).as_deref() == Some(&**denied_path),
-                "denied_path must be normalized: {denied_path:?}"
-            );
-        }
-        Self::new_with_options_and_map(
+        Self::new_internal(
             name,
             root,
-            denied_paths,
-            watcher_config,
-            empty_disk_file_system_map_operation(),
+            Vec::new(),
+            DiskWatcherConfig::default(),
+            DiskFileSystemMap::empty(),
         )
     }
 
-    pub fn new_with_options_and_map(
+    /// An extended version of [`DiskFileSystem::new`].
+    ///
+    /// `denied_paths` contains normalized Unix-style paths relative to `root` that
+    /// [`DiskFileSystem`] will treat as nonexistent, disallowing reads of files in those
+    /// directories.
+    ///
+    /// `watcher_config` controls how filesystem changes are detected and reported. See
+    /// [`DiskWatcherConfig`].
+    ///
+    /// `map` provides other configured filesystems used to resolve symlink targets that leave
+    /// this filesystem's root. If you do not wish to allow cross-filesystem traversal, use
+    /// [`DiskFileSystemMap::empty`].
+    pub fn new_with_options(
         name: RcStr,
         root: Vc<RcStr>,
         denied_paths: Vec<RcStr>,
@@ -2479,8 +2458,8 @@ mod tests {
         use turbo_tasks_backend::{BackendOptions, TurboTasksBackend, noop_backing_storage};
 
         use crate::{
-            DirectoryContent, DiskFileSystem, DiskWatcherConfig, File as TurboFile, FileContent,
-            FileSystem, FileSystemPath,
+            DirectoryContent, DiskFileSystem, DiskFileSystemMap, DiskWatcherConfig,
+            File as TurboFile, FileContent, FileSystem, FileSystemPath,
             glob::{Glob, GlobOptions},
         };
 
@@ -2538,6 +2517,7 @@ mod tests {
                     Vc::cell(root),
                     vec![denied_path],
                     DiskWatcherConfig::default(),
+                    DiskFileSystemMap::empty(),
                 );
                 let root_path = fs.root().await?;
 
@@ -2602,6 +2582,7 @@ mod tests {
                     Vc::cell(root),
                     vec![denied_path],
                     DiskWatcherConfig::default(),
+                    DiskFileSystemMap::empty(),
                 );
                 let root_path = fs.root().await?;
 
@@ -2665,6 +2646,7 @@ mod tests {
                     Vc::cell(root),
                     vec![denied_path],
                     DiskWatcherConfig::default(),
+                    DiskFileSystemMap::empty(),
                 );
                 let root_path = fs.root().await?;
 
@@ -2752,6 +2734,7 @@ mod tests {
                     Vc::cell(root),
                     vec![denied_path],
                     DiskWatcherConfig::default(),
+                    DiskFileSystemMap::empty(),
                 );
                 let root_path = fs.root().await?;
                 let allowed_file = root_path.join(&file_path)?;
@@ -2772,6 +2755,7 @@ mod tests {
                     Vc::cell(root),
                     vec![denied_path],
                     DiskWatcherConfig::default(),
+                    DiskFileSystemMap::empty(),
                 );
                 let root_path = fs.root().await?;
 

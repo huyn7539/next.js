@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use turbo_rcstr::{RcStr, rcstr};
-use turbo_tasks::{NonLocalValue, OperationValue, OperationVc, trace::TraceRawVcs};
+use turbo_tasks::{NonLocalValue, OperationValue, OperationVc, ResolvedVc, trace::TraceRawVcs};
 use turbo_tasks_fs::{
     DiskFileSystem, DiskFileSystemMap, DiskWatcherConfig, DiskWatcherRecursiveMode, FileSystemPath,
     canonicalize_to_rcstr,
@@ -149,9 +149,14 @@ pub(crate) fn create_additional_root_file_systems(
             });
             continue;
         }
+        // These cells are constructed in order declared in the Next.js config. That's mostly
+        // stable if the user doesn't add/remove/reorder roots frequently. It would be better if we
+        // could key the cell identity on `additional_root.key`, but there's not a good way to do
+        // this.
+        let canonical_root_vc = ResolvedVc::cell(canonical.clone());
         let operation = disk_file_system_operation(
             format!("additional-root-{}", additional_root.key).into(),
-            canonical.clone(),
+            canonical_root_vc,
             Vec::new(),
             DiskWatcherConfig {
                 recursive_mode: Some(DiskWatcherRecursiveMode::NonRecursive),

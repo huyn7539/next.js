@@ -46,7 +46,7 @@ use turbo_tasks::{
 use turbo_tasks_env::{EnvMap, ProcessEnv};
 use turbo_tasks_fs::{
     DiskFileSystem, DiskFileSystemMap, DiskWatcherConfig, FileContent, FileSystem, FileSystemPath,
-    VirtualFileSystem, disk_file_system_map, empty_disk_file_system_map_operation, invalidation,
+    VirtualFileSystem, invalidation,
 };
 use turbo_unix_path::join_path;
 use turbopack::{
@@ -463,9 +463,12 @@ async fn prepare_project_container_state(
         ..Default::default()
     };
 
+    // Note: It's important that the identity of `root_path_vc` is stable, so that we don't end up
+    // changing the identity of every `FileSystemPath` that depends on it.
+    let root_path_vc = ResolvedVc::cell(options.root_path.clone());
     let project_file_system = disk_file_system_operation(
         PROJECT_FILESYSTEM_NAME,
-        options.root_path.clone(),
+        root_path_vc,
         vec![denied_path, denied_profiles_path],
         watcher_config,
         map,
@@ -473,10 +476,10 @@ async fn prepare_project_container_state(
 
     let output_file_system = disk_file_system_operation(
         rcstr!("output"),
-        options.root_path.clone(),
+        root_path_vc,
         Vec::new(),
         DiskWatcherConfig::default(),
-        empty_disk_file_system_map_operation(),
+        DiskFileSystemMap::empty(),
     );
 
     let additional_roots = create_additional_root_file_systems(
@@ -562,20 +565,14 @@ fn output_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
 #[turbo_tasks::function(operation, root)]
 pub(crate) fn disk_file_system_operation(
     name: RcStr,
-    canonical_root: RcStr,
+    canonical_root: ResolvedVc<RcStr>,
     denied_paths: Vec<RcStr>,
     mut watcher_config: DiskWatcherConfig,
     map: OperationVc<DiskFileSystemMap>,
 ) -> Vc<DiskFileSystem> {
     watcher_config.extended_batch_delay_matcher =
         Some(ResolvedVc::upcast(NodeModulesPathMatcher.resolved_cell()));
-    DiskFileSystem::new_with_options_and_map(
-        name,
-        Vc::cell(canonical_root),
-        denied_paths,
-        watcher_config,
-        map,
-    )
+    DiskFileSystem::new_with_options(name, *canonical_root, denied_paths, watcher_config, map)
 }
 
 #[turbo_tasks::function(operation, session_dependent)]
@@ -605,7 +602,7 @@ async fn disk_file_system_map_operation(
         })
         .try_join()
         .await?;
-    Ok(disk_file_system_map(filesystems))
+    Ok(DiskFileSystemMap(filesystems).cell())
 }
 
 enum EnvDiffType {

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use turbo_rcstr::RcStr;
-use turbo_tasks::{ResolvedVc, Vc};
+use turbo_tasks::{OperationVc, ResolvedVc, Vc};
 use turbo_unix_path::sys_to_unix;
 
 use crate::{DiskFileSystem, FileSystemPath};
@@ -10,7 +10,7 @@ use crate::{DiskFileSystem, FileSystemPath};
 ///
 /// Roots are validated to be non-overlapping before this value is constructed,
 /// so lookup does not need longest-prefix matching.
-#[turbo_tasks::value]
+#[turbo_tasks::value(shared)]
 pub struct DiskFileSystemMap(pub Vec<(RcStr, ResolvedVc<DiskFileSystem>)>);
 
 impl DiskFileSystemMap {
@@ -28,18 +28,14 @@ impl DiskFileSystemMap {
         }
         None
     }
-}
 
-#[turbo_tasks::function]
-pub fn disk_file_system_map(
-    entries: Vec<(RcStr, ResolvedVc<DiskFileSystem>)>,
-) -> Vc<DiskFileSystemMap> {
-    DiskFileSystemMap(entries).cell()
-}
-
-#[turbo_tasks::function(operation)]
-pub fn empty_disk_file_system_map_operation() -> Vc<DiskFileSystemMap> {
-    DiskFileSystemMap(Vec::new()).cell()
+    pub fn empty() -> OperationVc<DiskFileSystemMap> {
+        #[turbo_tasks::function(operation)]
+        pub fn operation() -> Vc<DiskFileSystemMap> {
+            DiskFileSystemMap(Vec::new()).cell()
+        }
+        operation()
+    }
 }
 
 #[cfg(test)]
