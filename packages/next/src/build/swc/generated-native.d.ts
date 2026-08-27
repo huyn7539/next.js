@@ -360,34 +360,22 @@ export interface NapiOptionEnvVar {
   value?: RcStr
 }
 
-/** The project options that may change without restarting the process. */
+/**
+ * The subset of [`NapiProjectOptions`] that may change without restarting the process. Used by
+ * [`project_update`].
+ *
+ * Refer to [`NapiProjectOptions`] for documentation on this struct's fields.
+ */
 export interface NapiPartialProjectOptions {
-  /** The contents of next.config.js, serialized to JSON. */
   nextConfig?: RcStr
-  /** A map of environment variables to use when compiling code. */
   env?: Array<NapiEnvVar>
-  /**
-   * A map of environment variables which should get injected at compile
-   * time.
-   */
   defineEnv?: NapiDefineEnv
-  /** The mode in which Next.js is running. */
   dev?: boolean
-  /** The server actions encryption key. */
   encryptionKey?: RcStr
-  /** The build id. */
   buildId?: RcStr
-  /** Options for draft mode. */
   previewProps?: NapiDraftModeOptions
-  /** The browserslist query to use for targeting browsers. */
   browserslistQuery?: RcStr
-  /** Whether to write the route hashes manifest. */
   writeRoutesHashesManifest?: boolean
-  /**
-   * When the code is minified, this opts out of the default mangling of
-   * local names for variables, functions etc., which can be useful for
-   * debugging/profiling purposes.
-   */
   noMangling?: boolean
 }
 

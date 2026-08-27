@@ -1,4 +1,4 @@
-use std::{iter, time::Duration};
+use std::{iter, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -39,9 +39,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{Instrument, field::Empty};
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
-    Completion, Completions, FxIndexMap, NonLocalValue, OperationValue, OperationVc, ReadRef,
-    ResolvedVc, State, TransientInstance, TryFlatJoinIterExt, TryJoinIterExt, Vc,
-    debug::ValueDebugFormat, fxindexmap, trace::TraceRawVcs,
+    Completion, Completions, FxIndexMap, InvalidationReason, NonLocalValue, OperationValue,
+    OperationVc, ReadRef, ResolvedVc, State, TransientInstance, TryFlatJoinIterExt, TryJoinIterExt,
+    Vc, debug::ValueDebugFormat, fxindexmap, trace::TraceRawVcs,
 };
 use turbo_tasks_env::{EnvMap, ProcessEnv};
 use turbo_tasks_fs::{
@@ -439,95 +439,6 @@ pub struct ProjectContainer {
     versioned_content_map: Option<ResolvedVc<VersionedContentMap>>,
 }
 
-/// Constructs and activates the initial project container state, including its filesystem
-/// watchers. Called by [`ProjectContainer::initialize`].
-async fn prepare_project_container_state(
-    container: ResolvedVc<ProjectContainer>,
-    options: ProjectOptions,
-) -> Result<()> {
-    let map = disk_file_system_map_operation(container);
-    let config_json: serde_json::Value = serde_json::from_str(&options.next_config)?;
-    let dist_dir_root = config_json
-        .get("distDirRoot")
-        .and_then(|value| value.as_str())
-        .unwrap_or(".next");
-    let denied_path = join_path(&options.project_path, dist_dir_root)
-        .context("distDirRoot must stay inside the project root")?
-        .into();
-    let denied_profiles_path = join_path(&options.project_path, DIST_PROFILES_DIR_NAME)
-        .unwrap()
-        .into();
-    let watcher_config = DiskWatcherConfig {
-        poll_interval: options.watch.poll_interval,
-        report_invalidation_reason: true,
-        ..Default::default()
-    };
-
-    // Note: It's important that the identity of `root_path_vc` is stable, so that we don't end up
-    // changing the identity of every `FileSystemPath` that depends on it.
-    let root_path_vc = ResolvedVc::cell(options.root_path.clone());
-    let project_file_system = disk_file_system_operation(
-        PROJECT_FILESYSTEM_NAME,
-        root_path_vc,
-        vec![denied_path, denied_profiles_path],
-        watcher_config,
-        map,
-    );
-
-    let output_file_system = disk_file_system_operation(
-        rcstr!("output"),
-        root_path_vc,
-        Vec::new(),
-        DiskWatcherConfig::default(),
-        DiskFileSystemMap::empty(),
-    );
-
-    let additional_roots = create_additional_root_file_systems(
-        &options.additional_roots,
-        &options.root_path,
-        watcher_config,
-        map,
-    )?;
-    let watch = options.watch.enable;
-
-    for (_, operation) in &additional_roots.file_systems {
-        if watch {
-            let fs = operation.read_strongly_consistent().await?;
-            fs.start_watching().await?;
-        } else {
-            operation
-                .read_strongly_consistent()
-                .await?
-                .invalidate_with_reason(|path| invalidation::Initialize {
-                    path: RcStr::from(path.to_string_lossy()),
-                });
-        }
-    }
-    let project_fs = project_file_system.read_strongly_consistent().await?;
-    if options.watch.enable {
-        project_fs.start_watching().await?;
-    } else {
-        project_fs.invalidate_with_reason(|path| invalidation::Initialize {
-            path: RcStr::from(path.to_string_lossy()),
-        });
-    }
-    output_file_system
-        .read_strongly_consistent()
-        .await?
-        .invalidate_with_reason(|path| invalidation::Initialize {
-            path: RcStr::from(path.to_string_lossy()),
-        });
-
-    container.await?.state.set(Some(ProjectContainerState {
-        options,
-        project_file_system,
-        output_file_system,
-        additional_file_systems: additional_roots.file_systems,
-        additional_root_errors: additional_roots.errors,
-    }));
-    Ok(())
-}
-
 #[turbo_tasks::value_impl]
 impl ProjectContainer {
     #[turbo_tasks::function(operation, root)]
@@ -547,19 +458,103 @@ impl ProjectContainer {
     }
 }
 
-#[turbo_tasks::function(operation, root)]
-fn project_operation(project: ResolvedVc<ProjectContainer>) -> Vc<Project> {
-    project.project()
-}
+/// Constructs and activates the initial project container state, including its filesystem
+/// watchers. Called by [`ProjectContainer::initialize`].
+async fn prepare_project_container_state(
+    container: ResolvedVc<ProjectContainer>,
+    options: ProjectOptions,
+) -> Result<()> {
+    let map = disk_file_system_map_operation(container);
+    let config_json: serde_json::Value = serde_json::from_str(&options.next_config)?;
 
-#[turbo_tasks::function(operation, root)]
-fn project_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
-    project.project_fs()
-}
+    let dist_dir_root = config_json
+        .get("distDirRoot")
+        .and_then(|value| value.as_str())
+        .unwrap_or(".next");
 
-#[turbo_tasks::function(operation, root)]
-fn output_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
-    project.output_fs()
+    let watcher_config = DiskWatcherConfig {
+        poll_interval: options.watch.poll_interval,
+        report_invalidation_reason: true,
+        ..Default::default()
+    };
+
+    // Note: It's important that the identity of `root_path_vc` is stable, so that we don't end up
+    // changing the identity of every `FileSystemPath` that depends on it.
+    let root_path_vc = ResolvedVc::cell(options.root_path.clone());
+    let denied_paths = vec![
+        RcStr::from(
+            join_path(&options.project_path, dist_dir_root)
+                .context("distDirRoot must stay inside the project root")?,
+        ),
+        // CPU profiles are written to `.next-profiles/` at the project root (see `--cpu-prof`).
+        // Deny access to it so the bundler doesn't traverse into the profiling output directory.
+        RcStr::from(join_path(&options.project_path, DIST_PROFILES_DIR_NAME).unwrap()),
+    ];
+
+    let project_fs_op = disk_file_system_operation(
+        PROJECT_FILESYSTEM_NAME,
+        root_path_vc,
+        denied_paths,
+        watcher_config,
+        map,
+    );
+
+    let output_fs_op = disk_file_system_operation(
+        rcstr!("output"),
+        root_path_vc,
+        Vec::new(),
+        DiskWatcherConfig::default(),
+        DiskFileSystemMap::empty(),
+    );
+
+    let additional_roots = create_additional_root_file_systems(
+        &options.additional_roots,
+        &options.root_path,
+        watcher_config,
+        map,
+    )?;
+    let enable_watch = options.watch.enable;
+
+    // Updating this state invalidates anything that might've read `map` up until now. We must do it
+    // this way because additional roots are a cyclic data structure.
+    container.await?.state.set(Some(ProjectContainerState {
+        options,
+        project_file_system: project_fs_op,
+        output_file_system: output_fs_op,
+        additional_file_systems: additional_roots.file_systems.clone(),
+        additional_root_errors: additional_roots.errors,
+    }));
+
+    // perform complete invalidations of all paths and watcher setup after finalizing the `map`
+    fn invalidation_reason(path: &Path) -> impl InvalidationReason + Clone + use<> {
+        invalidation::Initialize {
+            path: RcStr::from(path.to_string_lossy()),
+        }
+    }
+    let project_fs_vc = project_fs_op.read_strongly_consistent().await?;
+    if enable_watch {
+        project_fs_vc.start_watching().await?;
+        for (_, op) in &additional_roots.file_systems {
+            let fs = op.read_strongly_consistent().await?;
+            fs.start_watching().await?;
+        }
+    } else {
+        project_fs_vc.invalidate_with_reason(invalidation_reason);
+        for (_, op) in &additional_roots.file_systems {
+            op.read_strongly_consistent()
+                .await?
+                .invalidate_with_reason(invalidation_reason);
+        }
+    }
+
+    // we never watch `output_file_system`, but we do invalidate it across restarts, in case some
+    // other process modified or deleted files.
+    output_fs_op
+        .read_strongly_consistent()
+        .await?
+        .invalidate_with_reason(invalidation_reason);
+
+    Ok(())
 }
 
 #[turbo_tasks::function(operation, root)]

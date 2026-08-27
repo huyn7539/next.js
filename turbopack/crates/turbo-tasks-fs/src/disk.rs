@@ -349,7 +349,7 @@ impl DiskFileSystemInner {
 
     /// Invalidates every tracked file in the filesystem.
     ///
-    /// Calls the given
+    /// Calls the given `reason` closure to find the [`InvalidationReason`].
     pub(crate) fn invalidate_with_reason<R: InvalidationReason + Clone>(
         &self,
         reason: impl Fn(&Path) -> R + Sync,

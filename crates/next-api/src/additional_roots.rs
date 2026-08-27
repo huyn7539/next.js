@@ -159,6 +159,8 @@ pub(crate) fn create_additional_root_file_systems(
             canonical_root_vc,
             Vec::new(),
             DiskWatcherConfig {
+                // we assume that most files in an additional root won't be read, so a recursive
+                // watcher may be more expensive than we'd like, always use a non-recursive watcher.
                 recursive_mode: Some(DiskWatcherRecursiveMode::NonRecursive),
                 ..watcher_config
             },
