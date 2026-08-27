@@ -40,31 +40,26 @@ impl DiskFileSystemMap {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use turbo_rcstr::rcstr;
-    use turbo_tasks::Vc;
+    use turbo_tasks_backend::{BackendOptions, TurboTasksBackend, noop_backing_storage};
 
-    use super::DiskFileSystemMap;
-    use crate::DiskFileSystem;
-
-    #[turbo_tasks::function(operation, root)]
-    async fn assert_component_safe_lookup() -> anyhow::Result<()> {
-        let fs = DiskFileSystem::new(rcstr!("root"), Vc::cell(rcstr!("/tmp/root")))
-            .to_resolved()
-            .await?;
-        let map = DiskFileSystemMap(vec![(rcstr!("/tmp/root"), fs)]);
-        assert_eq!(
-            map.lookup(Path::new("/tmp/root/file")).unwrap().path,
-            "file"
-        );
-        assert!(map.lookup(Path::new("/tmp/root-other/file")).is_none());
-        Ok(())
-    }
+    use super::*;
 
     #[tokio::test]
     async fn component_safe_lookup() {
-        use turbo_tasks_backend::{BackendOptions, TurboTasksBackend, noop_backing_storage};
+        #[turbo_tasks::function(operation, root)]
+        async fn assert_component_safe_lookup() -> anyhow::Result<()> {
+            let fs = DiskFileSystem::new(rcstr!("root"), Vc::cell(rcstr!("/tmp/root")))
+                .to_resolved()
+                .await?;
+            let map = DiskFileSystemMap(vec![(rcstr!("/tmp/root"), fs)]);
+            assert_eq!(
+                map.lookup(Path::new("/tmp/root/file")).unwrap().path,
+                "file"
+            );
+            assert!(map.lookup(Path::new("/tmp/root-other/file")).is_none());
+            Ok(())
+        }
 
         let tt = turbo_tasks::TurboTasks::new(TurboTasksBackend::new(
             BackendOptions::default(),
