@@ -440,7 +440,7 @@ pub struct ProjectContainer {
 }
 
 /// Constructs and activates the initial project container state, including its filesystem
-/// watchers.
+/// watchers. Called by [`ProjectContainer::initialize`].
 async fn prepare_project_container_state(
     container: ResolvedVc<ProjectContainer>,
     options: ProjectOptions,
@@ -462,16 +462,20 @@ async fn prepare_project_container_state(
         report_invalidation_reason: true,
         ..Default::default()
     };
-    let project_file_system = disk_file_system_with_options_operation(
+
+    let project_file_system = disk_file_system_operation(
         PROJECT_FILESYSTEM_NAME,
         options.root_path.clone(),
         vec![denied_path, denied_profiles_path],
         watcher_config,
         map,
     );
+
     let output_file_system = disk_file_system_operation(
         rcstr!("output"),
         options.root_path.clone(),
+        Vec::new(),
+        DiskWatcherConfig::default(),
         empty_disk_file_system_map_operation(),
     );
 
@@ -556,16 +560,7 @@ fn output_fs_operation(project: ResolvedVc<Project>) -> Vc<DiskFileSystem> {
 }
 
 #[turbo_tasks::function(operation, root)]
-fn disk_file_system_operation(
-    name: RcStr,
-    canonical_root: RcStr,
-    map: OperationVc<DiskFileSystemMap>,
-) -> Vc<DiskFileSystem> {
-    DiskFileSystem::new_with_map(name, Vc::cell(canonical_root), map)
-}
-
-#[turbo_tasks::function(operation, root)]
-pub(crate) fn disk_file_system_with_options_operation(
+pub(crate) fn disk_file_system_operation(
     name: RcStr,
     canonical_root: RcStr,
     denied_paths: Vec<RcStr>,

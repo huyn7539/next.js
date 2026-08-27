@@ -12,7 +12,7 @@ use turbo_tasks_fs::{
 };
 use turbopack_core::issue::{Issue, IssueExt, IssueSeverity, IssueStage, StyledString};
 
-use crate::project::disk_file_system_with_options_operation;
+use crate::project::disk_file_system_operation;
 
 /// A named additional filesystem root with a canonicalized path.
 #[derive(
@@ -149,7 +149,7 @@ pub(crate) fn create_additional_root_file_systems(
             });
             continue;
         }
-        let operation = disk_file_system_with_options_operation(
+        let operation = disk_file_system_operation(
             format!("additional-root-{}", additional_root.key).into(),
             canonical.clone(),
             Vec::new(),
