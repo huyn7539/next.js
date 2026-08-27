@@ -436,6 +436,7 @@ struct ProjectContainerState {
 pub struct ProjectContainer {
     name: RcStr,
     state: State<Option<ProjectContainerState>>,
+    additional_root_paths: State<FxIndexMap<RcStr, RcStr>>,
     versioned_content_map: Option<ResolvedVc<VersionedContentMap>>,
 }
 
@@ -453,6 +454,7 @@ impl ProjectContainer {
                 None
             },
             state: State::new(None),
+            additional_root_paths: State::new(FxIndexMap::default()),
         }
         .cell())
     }
@@ -461,10 +463,10 @@ impl ProjectContainer {
 /// Constructs and activates the initial project container state, including its filesystem
 /// watchers. Called by [`ProjectContainer::initialize`].
 async fn prepare_project_container_state(
-    container: ResolvedVc<ProjectContainer>,
+    container_vc: ResolvedVc<ProjectContainer>,
     options: ProjectOptions,
 ) -> Result<()> {
-    let map = disk_file_system_map_operation(container);
+    let map = disk_file_system_map_operation(container_vc);
     let config_json: serde_json::Value = serde_json::from_str(&options.next_config)?;
 
     let dist_dir_root = config_json
@@ -478,9 +480,10 @@ async fn prepare_project_container_state(
         ..Default::default()
     };
 
-    // Note: It's important that the identity of `root_path_vc` is stable, so that we don't end up
-    // changing the identity of every `FileSystemPath` that depends on it.
-    let root_path_vc = ResolvedVc::cell(options.root_path.clone());
+    // Note: It's important that the identity of this operation is stable, so that we don't end up
+    // changing the identity of every `FileSystemPath` that depends on its output cell.
+    let root_path_op = project_root_path_operation(container_vc);
+
     let denied_paths = vec![
         RcStr::from(
             join_path(&options.project_path, dist_dir_root)
@@ -493,7 +496,7 @@ async fn prepare_project_container_state(
 
     let project_fs_op = disk_file_system_operation(
         PROJECT_FILESYSTEM_NAME,
-        root_path_vc,
+        root_path_op,
         denied_paths,
         watcher_config,
         map,
@@ -501,23 +504,36 @@ async fn prepare_project_container_state(
 
     let output_fs_op = disk_file_system_operation(
         rcstr!("output"),
-        root_path_vc,
+        root_path_op,
         Vec::new(),
         DiskWatcherConfig::default(),
         DiskFileSystemMap::empty(),
     );
 
     let additional_roots = create_additional_root_file_systems(
+        container_vc,
         &options.additional_roots,
         &options.root_path,
         watcher_config,
         map,
     )?;
     let enable_watch = options.watch.enable;
+    // These paths must be available before the lazy filesystem operations are first resolved.
+    let additional_root_paths = options
+        .additional_roots
+        .iter()
+        .filter_map(|root| {
+            root.as_ref()
+                .ok()
+                .map(|root| (root.key.clone(), root.canonical_path.clone()))
+        })
+        .collect();
 
     // Updating this state invalidates anything that might've read `map` up until now. We must do it
     // this way because additional roots are a cyclic data structure.
-    container.await?.state.set(Some(ProjectContainerState {
+    let container = container_vc.await?;
+    container.additional_root_paths.set(additional_root_paths);
+    container.state.set(Some(ProjectContainerState {
         options,
         project_file_system: project_fs_op,
         output_file_system: output_fs_op,
@@ -560,14 +576,48 @@ async fn prepare_project_container_state(
 #[turbo_tasks::function(operation, root)]
 pub(crate) fn disk_file_system_operation(
     name: RcStr,
-    canonical_root: ResolvedVc<RcStr>,
+    canonical_root: OperationVc<RcStr>,
     denied_paths: Vec<RcStr>,
     mut watcher_config: DiskWatcherConfig,
     map: OperationVc<DiskFileSystemMap>,
 ) -> Vc<DiskFileSystem> {
     watcher_config.extended_batch_delay_matcher =
         Some(ResolvedVc::upcast(NodeModulesPathMatcher.resolved_cell()));
-    DiskFileSystem::new_with_options(name, *canonical_root, denied_paths, watcher_config, map)
+    DiskFileSystem::new_with_options(
+        name,
+        canonical_root.connect(),
+        denied_paths,
+        watcher_config,
+        map,
+    )
+}
+
+#[turbo_tasks::function(operation, session_dependent)]
+async fn project_root_path_operation(container: ResolvedVc<ProjectContainer>) -> Result<Vc<RcStr>> {
+    Ok(Vc::cell(
+        container
+            .await?
+            .state
+            .get()
+            .as_ref()
+            .context("Unexpected: ProjectContainer is uninitialized")?
+            .options
+            .root_path
+            .clone(),
+    ))
+}
+
+#[turbo_tasks::function(operation, session_dependent)]
+pub(crate) async fn additional_root_path_operation(
+    container: ResolvedVc<ProjectContainer>,
+    key: RcStr,
+) -> Result<Vc<RcStr>> {
+    let container = container.await?;
+    let paths = container.additional_root_paths.get();
+    let path = paths
+        .get(&key)
+        .with_context(|| format!("Unexpected: additional root {key} is missing"))?;
+    Ok(Vc::cell(path.clone()))
 }
 
 #[turbo_tasks::function(operation, session_dependent)]

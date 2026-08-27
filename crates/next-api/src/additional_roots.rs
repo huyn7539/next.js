@@ -12,7 +12,9 @@ use turbo_tasks_fs::{
 };
 use turbopack_core::issue::{Issue, IssueExt, IssueSeverity, IssueStage, StyledString};
 
-use crate::project::disk_file_system_operation;
+use crate::project::{
+    ProjectContainer, additional_root_path_operation, disk_file_system_operation,
+};
 
 /// A named additional filesystem root with a canonicalized path.
 #[derive(
@@ -30,7 +32,7 @@ use crate::project::disk_file_system_operation;
 )]
 pub struct AdditionalRootConfig {
     pub(crate) key: RcStr,
-    canonical_path: RcStr,
+    pub(crate) canonical_path: RcStr,
 }
 
 impl AdditionalRootConfig {
@@ -118,6 +120,7 @@ pub(crate) struct AdditionalRootFileSystems {
 }
 
 pub(crate) fn create_additional_root_file_systems(
+    container: ResolvedVc<ProjectContainer>,
     additional_roots: &[Result<AdditionalRootConfig, AdditionalRootError>],
     project_root: &RcStr,
     watcher_config: DiskWatcherConfig,
@@ -149,14 +152,13 @@ pub(crate) fn create_additional_root_file_systems(
             });
             continue;
         }
-        // These cells are constructed in order declared in the Next.js config. That's mostly
-        // stable if the user doesn't add/remove/reorder roots frequently. It would be better if we
-        // could key the cell identity on `additional_root.key`, but there's not a good way to do
-        // this.
-        let canonical_root_vc = ResolvedVc::cell(canonical.clone());
+        // We're not inside a turbo-task function: Call an operation to create a cell for us. We
+        // pass the `ProjectContainer` and a key, which both have a stable identity, this reduces
+        // invalidations when additional roots are added or removed.
+        let canonical_root = additional_root_path_operation(container, additional_root.key.clone());
         let operation = disk_file_system_operation(
-            format!("additional-root-{}", additional_root.key).into(),
-            canonical_root_vc,
+            RcStr::from(format!("additional-root-{}", additional_root.key)),
+            canonical_root,
             Vec::new(),
             DiskWatcherConfig {
                 // we assume that most files in an additional root won't be read, so a recursive
