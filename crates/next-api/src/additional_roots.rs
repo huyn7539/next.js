@@ -211,7 +211,7 @@ impl Issue for AdditionalRootIssue {
     }
 
     fn severity(&self) -> IssueSeverity {
-        IssueSeverity::Error
+        IssueSeverity::Warning
     }
 
     async fn file_path(&self) -> Result<FileSystemPath> {

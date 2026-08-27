@@ -203,6 +203,12 @@ export interface NapiAdditionalIssueSource {
   codeFrame?: string
 }
 
+export interface NapiAdditionalRoot {
+  key: RcStr
+  path: RcStr
+  ignoreIfMissing?: boolean
+}
+
 export interface NapiAssetPath {
   path: RcStr
   contentHash: RcStr
@@ -352,12 +358,6 @@ export interface NapiNextTurbopackCallbacksJsObject {
 export interface NapiOptionEnvVar {
   name: RcStr
   value?: RcStr
-}
-
-export interface NapiAdditionalRoot {
-  key: RcStr
-  path: RcStr
-  optional?: boolean
 }
 
 /** [NapiProjectOptions] with all fields optional. */
