@@ -92,7 +92,6 @@ import { retry } from 'next-test-utils'
           'packages/linked'
         )
         const link = path.join(next.testDir, 'linked')
-
         await fs.move(externalRoot, updatedExternalRoot)
         await fs.remove(link)
         await fs.symlink(updatedLinkedPackage, link, 'junction')

@@ -2082,8 +2082,8 @@ mod tests {
 
         /// A relative target must stay inside the filesystem root at every step, not just at the
         /// end. Both of these step above the root; one comes back into it and one doesn't, but
-        /// neither can be resolved against a root-relative [`FileSystemPath`], so `read_link`
-        /// rejects both and every [`LinkContent::Link`] stays resolvable by construction.
+        /// neither resolves into a configured filesystem, so `read_link` rejects both and every
+        /// [`LinkContent::Link`] stays resolvable by construction.
         #[cfg(unix)]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn test_read_escaping_relative_symlink() {
@@ -2123,13 +2123,13 @@ mod tests {
                 root_path: FileSystemPath,
             ) -> anyhow::Result<()> {
                 // sub/link-reentrant -> ../../<root dir name>/root.txt, which steps above the root
-                // and back down into it. Resolving this would need the names of the root's own
-                // ancestors, which a root-relative path doesn't carry.
+                // and back down into it. It cannot be resolved through the configured filesystem
+                // map because no filesystem owns the path while it is outside the root.
                 let reentrant = fs.read_link(root_path.join("sub/link-reentrant")?).await?;
                 assert!(matches!(
                     &*reentrant,
                     LinkContent::Invalid { reason }
-                        if reason == "the symlink target leaves the filesystem root"
+                        if reason == "the symlink target leaves the configured filesystem roots"
                 ));
 
                 // sub/link-sideways -> ../../sibling/root.txt, which steps above the root and down
@@ -2138,7 +2138,7 @@ mod tests {
                 assert!(matches!(
                     &*sideways,
                     LinkContent::Invalid{reason}
-                        if reason == "the symlink target leaves the filesystem root"
+                        if reason == "the symlink target leaves the configured filesystem roots"
                 ));
 
                 // `\` is a legal filename character on unix, so a raw target may contain one. It

@@ -385,7 +385,7 @@ pub mod tests {
             inner_sub_dir.results,
             HashMap::from_iter([(
                 "index.js".into(),
-                DirectoryEntry::File(root.join("sub/dir/index.js")?),
+                DirectoryEntry::File(root.join("dir/index.js")?),
             )])
         );
         assert_eq!(inner_sub_dir.inner.len(), 0);
@@ -403,7 +403,7 @@ pub mod tests {
             inner_sub_dir.results,
             HashMap::from_iter([(
                 "index.js".into(),
-                DirectoryEntry::File(root.join("sub/dir-chain/index.js")?),
+                DirectoryEntry::File(root.join("dir-link/index.js")?),
             )])
         );
         assert_eq!(inner_sub_dir.inner.len(), 0);
