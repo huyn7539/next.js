@@ -21,7 +21,7 @@ use regex::Regex;
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 use turbo_rcstr::RcStr;
-use turbo_tasks::{Effects, OperationVc, ReadRef, TaskId, Vc, VcValueType, take_effects};
+use turbo_tasks::{Effects, GcRoot, OperationVc, ReadRef, TaskId, Vc, VcValueType, take_effects};
 use turbo_tasks_fs::FileContent;
 use turbopack_core::{
     issue::{
@@ -43,17 +43,30 @@ use crate::next_api::turbopack_ctx::NextTurbopackContext;
 /// [`turbo_tasks::OperationValue`] and should be dereferenced to an [`OperationVc`] before being
 /// passed to a [`turbo_tasks::function`].
 //
-// TODO: If we add a tracing garbage collector to turbo-tasks, this should be tracked as a GC root.
-#[derive(Clone)]
+/// A `DetachedVc` holds its operation's task alive against garbage collection for as long as the
+/// handle exists.
 pub struct DetachedVc<T> {
     turbopack_ctx: NextTurbopackContext,
     /// The Vc. Must be unresolved, otherwise you are referencing an inactive operation.
     vc: OperationVc<T>,
+    /// Holds `vc`'s task against GC for as long as this handle lives. Owning the guard rather
+    /// than calling `pin_task_for_gc`/`unpin_task_for_gc` by hand keeps the pair balanced by
+    /// construction, and makes `DetachedVc` intentionally non-`Clone` (see [`GcRoot`]): copying
+    /// the handle would have to take a second pin, and a `#[derive(Clone)]` added later would
+    /// silently share one pin between two owners and under-count on drop.
+    _gc_root: GcRoot,
 }
 
 impl<T> DetachedVc<T> {
     pub fn new(turbopack_ctx: NextTurbopackContext, vc: OperationVc<T>) -> Self {
-        Self { turbopack_ctx, vc }
+        // Pin the operation's task so GC treats this out-of-graph handle as a root.
+        let gc_root = GcRoot::pin(turbopack_ctx.turbo_tasks().clone(), vc.task_id());
+
+        Self {
+            turbopack_ctx,
+            vc,
+            _gc_root: gc_root,
+        }
     }
 
     pub fn turbopack_ctx(&self) -> &NextTurbopackContext {
@@ -73,12 +86,10 @@ impl<T> Deref for DetachedVc<T> {
 /// [`turbo_tasks::TurboTasks::spawn_root_task`] that can be passed back and forth to JS across the
 /// [`napi`][mod@napi] boundary via [`External`].
 ///
-/// JavaScript code receiving this value **must** call [`root_task_dispose`] in a `try...finally`
-/// block to avoid leaking root tasks.
+/// JavaScript code should call [`root_task_dispose`] in a `try...finally` block to dispose the root
+/// task promptly. If it doesn't, [`Drop`] disposes it as a backstop.
 ///
 /// This is used by [`subscribe`] to create a computation that re-executes when dependencies change.
-//
-// TODO: If we add a tracing garbage collector to turbo-tasks, this should be tracked as a GC root.
 pub struct RootTask {
     turbopack_ctx: NextTurbopackContext,
     task_id: Option<TaskId>,
@@ -86,7 +97,10 @@ pub struct RootTask {
 
 impl Drop for RootTask {
     fn drop(&mut self) {
-        // TODO stop the root task
+        // Tear it down now if `root_task_dispose` wasn't called.
+        if let Some(task) = self.task_id.take() {
+            self.turbopack_ctx.turbo_tasks().dispose_root_task(task);
+        }
     }
 }
 
