@@ -134,6 +134,25 @@ export const conditions: Record<string, Condition> = {
   ci: staticCondition('running in CI (`NEXT_TEST_CI`)', () =>
     Boolean(process.env.NEXT_TEST_CI)
   ),
+  adapter: staticCondition('running the adapter test variant', () =>
+    Boolean(process.env.NEXT_ENABLE_ADAPTER === '1')
+  ),
+  cacheComponentsTest: staticCondition(
+    'running the Cache Components test shard (`__NEXT_CACHE_COMPONENTS`)',
+    () => process.env.__NEXT_CACHE_COMPONENTS === 'true'
+  ),
+  standaloneOutput: staticCondition(
+    'running the standalone-output test variant (`TEST_OUTPUT_STANDALONE`)',
+    () => process.env.TEST_OUTPUT_STANDALONE === 'true'
+  ),
+  turbopackDev: staticCondition(
+    'the test run uses the Turbopack development build (`TURBOPACK_DEV`)',
+    () => Boolean(process.env.TURBOPACK_DEV)
+  ),
+  turbopackBuild: staticCondition(
+    'the test run uses the Turbopack production build (`TURBOPACK_BUILD`)',
+    () => Boolean(process.env.TURBOPACK_BUILD)
+  ),
 
   // Always false, so `// @gate FIXME` marks a test as a known failure without
   // inventing a condition for it. Mirrors the same convention in React's
