@@ -312,6 +312,7 @@ import {
   anySegmentNeedsInstantValidationInBuild,
   resolveInstantConfigSamplesForPage,
 } from './instant-validation/instant-config'
+import { resolveRequireStaticConfig } from './segment-config/require-static'
 import { warnOnce } from '../../shared/lib/utils/warn-once'
 import {
   createWebDebugChannel,
@@ -8738,6 +8739,15 @@ async function prerenderToStream(
 
   try {
     if (cacheComponents) {
+      const requireStaticConfig = await resolveRequireStaticConfig(
+        ctx.componentMod.routeModule.userland.loaderTree
+      )
+      if (process.env.NEXT_PRIVATE_DEBUG_RUNTIME_DATA) {
+        console.log(
+          `${workStore.route} :: requireStatic = ${JSON.stringify(requireStaticConfig)}`
+        )
+      }
+
       /**
        * cacheComponents with PPR
        *
@@ -8816,6 +8826,7 @@ async function prerenderToStream(
         hmrRefreshHash: undefined,
         // We don't track vary params during initial prerender, only the final one
         varyParamsAccumulator: null,
+        requireStatic: requireStaticConfig,
         prerenderDataTracking: null,
         isFallbackUpgradeable: renderOpts.isFallbackUpgradeable === true,
       }
@@ -8852,6 +8863,7 @@ async function prerenderToStream(
         hmrRefreshHash: undefined,
         // We don't track vary params during initial prerender, only the final one
         varyParamsAccumulator: null,
+        requireStatic: requireStaticConfig,
         prerenderDataTracking: null,
         isFallbackUpgradeable: renderOpts.isFallbackUpgradeable === true,
       })
@@ -9106,6 +9118,7 @@ async function prerenderToStream(
         resumeDataCache,
         hmrRefreshHash: undefined,
         varyParamsAccumulator,
+        requireStatic: requireStaticConfig,
         prerenderDataTracking,
         isFallbackUpgradeable: renderOpts.isFallbackUpgradeable === true,
       }
@@ -9161,6 +9174,7 @@ async function prerenderToStream(
         resumeDataCache,
         hmrRefreshHash: undefined,
         varyParamsAccumulator,
+        requireStatic: requireStaticConfig,
         prerenderDataTracking,
         isFallbackUpgradeable: renderOpts.isFallbackUpgradeable === true,
       })
@@ -9886,6 +9900,7 @@ async function prerenderToStream(
         resumeDataCache: originalResumeDataCache,
         hmrRefreshHash: undefined,
         varyParamsAccumulator: null,
+        requireStatic: null,
         prerenderDataTracking: null,
         isFallbackUpgradeable: renderOpts.isFallbackUpgradeable === true,
       }

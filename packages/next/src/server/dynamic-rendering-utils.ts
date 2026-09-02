@@ -1,3 +1,4 @@
+import type { RequireStatic } from '../build/segment-config/app/app-segment-config'
 import { InvariantError } from '../shared/lib/invariant-error'
 import { createPromiseWithResolvers } from '../shared/lib/promise-with-resolvers'
 import {
@@ -375,6 +376,9 @@ function trackRuntimeDataAccessed(
         return
       }
 
+      const forcedStaticLevel = getForcedStaticLevel(
+        workUnitStore.requireStatic
+      )
       switch (dataKind) {
         case PrerenderDataKind.SessionData: {
           // Potentially deopt both the shell and the prefetch,
@@ -386,13 +390,19 @@ function trackRuntimeDataAccessed(
             | RenderStage.PrefetchStatic
             | null = null
 
-          if (currentStage <= RenderStage.ShellStatic) {
+          if (
+            currentStage <= RenderStage.ShellStatic &&
+            forcedStaticLevel < ForcedStatic.Shell
+          ) {
             prerenderDataTracking.shouldAttemptStaticShell = false
             logRuntimeDeopt?.(expression, 'shell')
             firstAffectedStage ??= RenderStage.ShellStatic
           }
 
-          if (currentStage <= RenderStage.PrefetchStatic) {
+          if (
+            currentStage <= RenderStage.PrefetchStatic &&
+            forcedStaticLevel < ForcedStatic.Prefetch
+          ) {
             prerenderDataTracking.shouldAttemptStaticPrefetch = false
             logRuntimeDeopt?.(expression, 'prefetch')
             // NOTE: if the shell is affected, don't override it.
@@ -434,7 +444,10 @@ function trackRuntimeDataAccessed(
         }
         case PrerenderDataKind.UrlData: {
           // Only deopt the prefetch, not the shell, which cannot access URL data anyway.
-          if (currentStage <= RenderStage.PrefetchStatic) {
+          if (
+            currentStage <= RenderStage.PrefetchStatic &&
+            forcedStaticLevel < ForcedStatic.Prefetch
+          ) {
             prerenderDataTracking.shouldAttemptStaticPrefetch = false
             logRuntimeDeopt?.(expression, 'prefetch')
 
@@ -465,6 +478,31 @@ function trackRuntimeDataAccessed(
       break
     default:
       workUnitStore satisfies never
+  }
+}
+
+enum ForcedStatic {
+  None = 0,
+  Shell = 1,
+  Prefetch = 2,
+  Navigation = 3,
+}
+function getForcedStaticLevel(requireStatic: RequireStatic | null) {
+  switch (requireStatic) {
+    case null:
+    case 'auto':
+    case false: {
+      return ForcedStatic.None
+    }
+    case 'shell': {
+      return ForcedStatic.Shell
+    }
+    case 'prefetch': {
+      return ForcedStatic.Prefetch
+    }
+    case 'navigation': {
+      return ForcedStatic.Navigation
+    }
   }
 }
 
