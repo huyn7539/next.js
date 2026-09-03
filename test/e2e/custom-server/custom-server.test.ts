@@ -2,7 +2,7 @@
 import { nextTestSetup, isNextDev } from 'e2e-utils'
 import { retry } from 'next-test-utils'
 import cheerio from 'cheerio'
-import https from 'https'
+import { Agent } from 'undici'
 
 const sharedDeps = { 'get-port': '5.1.1' }
 const sharedNodeEnv = isNextDev ? 'development' : 'production'
@@ -14,12 +14,12 @@ describe.each([
   { title: 'HTTPS', useHttps: 'true' },
 ])('Custom Server $title', ({ title, useHttps }) => {
   // The HTTPS server presents a self-signed certificate that the test process
-  // does not trust. Pass a custom agent that skips cert verification on every
-  // HTTPS request. Setting `process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'`
-  // does not take effect from inside the Jest VM context.
-  const agent =
+  // does not trust. Pass a custom dispatcher that skips cert verification on
+  // every HTTPS request. Setting `process.env.NODE_TLS_REJECT_UNAUTHORIZED =
+  // '0'` does not take effect from inside the Jest VM context.
+  const dispatcher =
     useHttps === 'true'
-      ? new https.Agent({ rejectUnauthorized: false })
+      ? new Agent({ connect: { rejectUnauthorized: false } })
       : undefined
 
   describe('with dynamic assetPrefix', () => {
@@ -35,30 +35,32 @@ describe.each([
     if (skipped) return
 
     it('should render the custom 404 page for an unmatched request', async () => {
-      const response = await next.fetch('/does-not-exist', { agent })
+      const response = await next.fetch('/does-not-exist', { dispatcher })
 
       expect(response.status).toBe(404)
       expect(await response.text()).toContain('made it to 404')
     })
 
     it('should serve internal file from render', async () => {
-      const html = await next.render('/static/hello.txt', undefined, { agent })
+      const html = await next.render('/static/hello.txt', undefined, {
+        dispatcher,
+      })
       expect(html).toMatch(/hello world/)
     })
 
     it('should handle render with undefined query', async () => {
-      const html = await next.render('/no-query', undefined, { agent })
+      const html = await next.render('/no-query', undefined, { dispatcher })
       expect(html).toMatch(/"query":/)
     })
 
     it('should set the assetPrefix dynamically', async () => {
-      const normalUsage = await next.render('/asset', undefined, { agent })
+      const normalUsage = await next.render('/asset', undefined, { dispatcher })
       expect(normalUsage).not.toMatch(/127\.0\.0\.1/)
 
       const dynamicUsage = await next.render(
         '/asset?setAssetPrefix=1',
         undefined,
-        { agent }
+        { dispatcher }
       )
       expect(dynamicUsage).toMatch(/127\.0\.0\.1/)
       await retry(async () => {
@@ -70,7 +72,7 @@ describe.each([
       const normalUsage = await next.render(
         '/asset?setEmptyAssetPrefix=1',
         undefined,
-        { agent }
+        { dispatcher }
       )
       expect(normalUsage).toMatch(/"\/_next/)
     })
@@ -78,11 +80,13 @@ describe.each([
     it('should set the assetPrefix to a given request', async () => {
       for (let lc = 0; lc < 10; lc++) {
         // Make requests sequential to avoid race condition with setAssetPrefix
-        const normalUsage = await next.render('/asset', undefined, { agent })
+        const normalUsage = await next.render('/asset', undefined, {
+          dispatcher,
+        })
         const dynamicUsage = await next.render(
           '/asset?setAssetPrefix=1',
           undefined,
-          { agent }
+          { dispatcher }
         )
 
         expect(normalUsage).not.toMatch(/127\.0\.0\.1/)
@@ -97,7 +101,7 @@ describe.each([
     })
 
     it('should render nested index', async () => {
-      const html = await next.render('/dashboard', undefined, { agent })
+      const html = await next.render('/dashboard', undefined, { dispatcher })
       expect(html).toMatch(/made it to dashboard/)
       await retry(async () => {
         expect(next.cliOutput).toContain(deprecatedWarning('render'))
@@ -105,8 +109,8 @@ describe.each([
     })
 
     it('should warn once for repeated render calls', async () => {
-      await next.render('/dashboard', undefined, { agent })
-      await next.render('/dashboard', undefined, { agent })
+      await next.render('/dashboard', undefined, { dispatcher })
+      await next.render('/dashboard', undefined, { dispatcher })
 
       await retry(async () => {
         expect(
@@ -119,13 +123,13 @@ describe.each([
       const html = await next.render(
         '/custom-url-with-request-handler',
         undefined,
-        { agent }
+        { dispatcher }
       )
       expect(html).toMatch(/made it to dashboard/)
     })
 
     it.skip('should contain customServer in NEXT_DATA', async () => {
-      const html = await next.render('/', undefined, { agent })
+      const html = await next.render('/', undefined, { dispatcher })
       const $ = cheerio.load(html)
       expect(JSON.parse($('#__NEXT_DATA__').text()).customServer).toBe(true)
     })
@@ -133,14 +137,14 @@ describe.each([
     it.each(['/', '/no-query'])(
       'should handle compression for route %s',
       async (route) => {
-        const response = await next.fetch(route, { agent })
+        const response = await next.fetch(route, { dispatcher })
         expect(response.headers.get('Content-Encoding')).toBe('gzip')
       }
     )
 
     it('should read the expected url protocol in middleware', async () => {
       const path = '/middleware-augmented'
-      const response = await next.fetch(path, { agent })
+      const response = await next.fetch(path, { dispatcher })
       const port = new URL(next.url).port
       expect(response.headers.get('x-original-url')).toBe(
         `${useHttps === 'true' ? 'https' : 'http'}://localhost:${port}${path}`
@@ -164,7 +168,7 @@ describe.each([
     if (skipped) return
 
     it('response includes etag header', async () => {
-      const response = await next.fetch('/', { agent })
+      const response = await next.fetch('/', { dispatcher })
       expect(response.headers.get('etag')).toBeTruthy()
     })
   })
@@ -186,7 +190,7 @@ describe.each([
     if (skipped) return
 
     it('response does not include etag header', async () => {
-      const response = await next.fetch('/', { agent })
+      const response = await next.fetch('/', { dispatcher })
       expect(response.headers.get('etag')).toBeNull()
     })
   })
@@ -250,7 +254,7 @@ describe.each([
     if (skipped) return
     ;(isNextDev ? it : it.skip)('should warn in development mode', async () => {
       const cliOutputBefore = next.cliOutput.length
-      const html = await next.render('/no-slash', undefined, { agent })
+      const html = await next.render('/no-slash', undefined, { dispatcher })
       expect(html).toContain('made it to dashboard')
       await retry(async () => {
         expect(next.cliOutput.slice(cliOutputBefore)).toContain(
@@ -260,7 +264,7 @@ describe.each([
     })
     ;(isNextDev ? it.skip : it)('should warn in production mode', async () => {
       const cliOutputBefore = next.cliOutput.length
-      const html = await next.render('/no-slash', undefined, { agent })
+      const html = await next.render('/no-slash', undefined, { dispatcher })
       expect(html).toContain('made it to dashboard')
       await retry(async () => {
         expect(next.cliOutput.slice(cliOutputBefore)).toContain(
@@ -287,7 +291,9 @@ describe.each([
     if (skipped) return
 
     it('should serve internal file from render', async () => {
-      const html = await next.render('/static/hello.txt', undefined, { agent })
+      const html = await next.render('/static/hello.txt', undefined, {
+        dispatcher,
+      })
       expect(html).toMatch(/hello world/)
     })
   })
@@ -306,7 +312,7 @@ describe.each([
 
     it('stderr should include error message and stack trace', async () => {
       const cliOutputBefore = next.cliOutput.length
-      await next.fetch('/unhandled-rejection', { agent })
+      await next.fetch('/unhandled-rejection', { dispatcher })
       await retry(async () => {
         const newOutput = next.cliOutput.slice(cliOutputBefore)
         expect(newOutput).toContain('unhandledRejection')
@@ -335,7 +341,7 @@ describe.each([
       const rawHTML = await next.render(
         '/legacy-methods/render-to-html?q=2',
         undefined,
-        { agent }
+        { dispatcher }
       )
       const $ = cheerio.load(rawHTML)
       const text = $('p').text()
@@ -348,7 +354,7 @@ describe.each([
 
     it('NextCustomServer.render404', async () => {
       const html = await next.render('/legacy-methods/render404', undefined, {
-        agent,
+        dispatcher,
       })
       expect(html).toContain('made it to 404')
       await retry(async () => {
@@ -360,7 +366,7 @@ describe.each([
       const html = await next.render(
         '/legacy-methods/render-error',
         undefined,
-        { agent }
+        { dispatcher }
       )
       if (isNextDev) {
         expect(html).toContain('Error: kaboom')
@@ -376,7 +382,7 @@ describe.each([
       const html = await next.render(
         '/legacy-methods/render-error-to-html',
         undefined,
-        { agent }
+        { dispatcher }
       )
       if (isNextDev) {
         expect(html).toContain('Error: kaboom')
@@ -396,7 +402,7 @@ describe.each([
       ],
       ['revalidate', '/legacy-methods/revalidate'],
     ])('warns for NextCustomServer.%s', async (method, path) => {
-      const response = await next.fetch(path, { agent })
+      const response = await next.fetch(path, { dispatcher })
       expect(response.status).toBe(200)
       await retry(async () => {
         expect(next.cliOutput).toContain(deprecatedWarning(method))

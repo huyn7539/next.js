@@ -248,7 +248,8 @@ describe('app-custom-routes', () => {
 
         const res = await next.fetch(basePath + '/advanced/body/streaming', {
           method: 'POST',
-          body: stream,
+          body: Readable.toWeb(stream) as unknown as RequestInit['body'],
+          duplex: 'half',
         })
 
         expect(res.status).toEqual(200)
@@ -270,7 +271,8 @@ describe('app-custom-routes', () => {
 
       const res = await next.fetch(basePath + '/edge/advanced/body/streaming', {
         method: 'POST',
-        body: stream,
+        body: Readable.toWeb(stream) as unknown as RequestInit['body'],
+        duplex: 'half',
       })
 
       expect(res.status).toEqual(200)
@@ -343,7 +345,8 @@ describe('app-custom-routes', () => {
         })
         const res = await next.fetch(basePath + '/advanced/body/json', {
           method: 'POST',
-          body: stream,
+          body: Readable.toWeb(stream) as unknown as RequestInit['body'],
+          duplex: 'half',
         })
 
         expect(res.status).toEqual(200)
@@ -366,7 +369,8 @@ describe('app-custom-routes', () => {
       })
       const res = await next.fetch(basePath + '/edge/advanced/body/json', {
         method: 'POST',
-        body: stream,
+        body: Readable.toWeb(stream) as unknown as RequestInit['body'],
+        duplex: 'half',
       })
 
       expect(res.status).toEqual(200)

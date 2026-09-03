@@ -235,7 +235,7 @@ function runTests(dev = false) {
       const res = await resPromise
       assertDefined(res)
       expect(res.status).toBe(200)
-      expect(await res.json()).toStrictEqual({ hello: 'world' })
+      expect(await res.json()).toEqual({ hello: 'world' })
 
       expect(app.exitCode).toBe(null)
       expect(responseResolved).toBe(true)
@@ -262,7 +262,7 @@ function runTests(dev = false) {
         await expect(resPromise).resolves.toBeDefined()
         const res = await resPromise
         expect(res.status).toBe(200)
-        expect(await res.json()).toStrictEqual({ hello: 'world' })
+        expect(await res.json()).toEqual({ hello: 'world' })
 
         expect(await appKilledPromise).toEqual([143, null])
         expect(app.exitCode).toBe(143)
@@ -298,11 +298,15 @@ async function waitForAppToStartRefusingConnections(
 ) {
   await retry(
     async () => {
-      await expect(sendRequest).rejects.toEqual(
-        expect.objectContaining({
-          code: 'ECONNREFUSED',
-        })
+      // Global fetch rejects connection failures with `TypeError: fetch
+      // failed` and keeps the socket error on `cause`.
+      const err = await sendRequest().then(
+        () => {
+          throw new Error('Expected request to be refused')
+        },
+        (e) => e
       )
+      expect(err.cause?.code).toBe('ECONNREFUSED')
     },
     maxDuration,
     100,

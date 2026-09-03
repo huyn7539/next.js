@@ -9,6 +9,7 @@ import {
   waitFor,
   normalizeRegEx,
   normalizeManifest,
+  fetchViaRawHttp,
   retry,
 } from 'next-test-utils'
 import { nextTestSetup, isNextDev, isNextStart } from 'e2e-utils'
@@ -350,7 +351,7 @@ describe('Custom routes', () => {
 
   it('should not hang when proxy rewrite fails', async () => {
     const res = await next.fetch('/to-nowhere', {
-      timeout: 5000,
+      signal: AbortSignal.timeout(5000),
     })
 
     expect(res.status).toBe(500)
@@ -421,19 +422,19 @@ describe('Custom routes', () => {
 
   it('should handle chained redirects successfully', async () => {
     const res1 = await next.fetch('/redir-chain1', { redirect: 'manual' })
-    const res1location = new URL(res1.headers.get('location'), res1.url)
+    const res1location = new URL(res1.headers.get('location'), next.url)
       .pathname
     expect(res1.status).toBe(301)
     expect(res1location).toBe('/redir-chain2')
 
     const res2 = await next.fetch(res1location, { redirect: 'manual' })
-    const res2location = new URL(res2.headers.get('location'), res2.url)
+    const res2location = new URL(res2.headers.get('location'), next.url)
       .pathname
     expect(res2.status).toBe(302)
     expect(res2location).toBe('/redir-chain3')
 
     const res3 = await next.fetch(res2location, { redirect: 'manual' })
-    const res3location = new URL(res3.headers.get('location'), res3.url)
+    const res3location = new URL(res3.headers.get('location'), next.url)
       .pathname
     expect(res3.status).toBe(303)
     expect(res3location).toBe('/')
@@ -459,7 +460,7 @@ describe('Custom routes', () => {
 
   it('should redirect successfully with permanent: false', async () => {
     const res = await next.fetch('/redirect1', { redirect: 'manual' })
-    const { pathname } = new URL(res.headers.get('location'), res.url)
+    const { pathname } = new URL(res.headers.get('location'), next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/')
   })
@@ -468,7 +469,7 @@ describe('Custom routes', () => {
     const res = await next.fetch('/hello/123/another', {
       redirect: 'manual',
     })
-    const { pathname } = new URL(res.headers.get('location'), res.url)
+    const { pathname } = new URL(res.headers.get('location'), next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/blog/123')
   })
@@ -489,7 +490,7 @@ describe('Custom routes', () => {
 
   it('should redirect successfully with provided statusCode', async () => {
     const res = await next.fetch('/redirect2', { redirect: 'manual' })
-    const { pathname, search } = new URL(res.headers.get('location'), res.url)
+    const { pathname, search } = new URL(res.headers.get('location'), next.url)
     expect(res.status).toBe(301)
     expect(pathname).toBe('/')
     expect(search).toEqual('')
@@ -499,7 +500,7 @@ describe('Custom routes', () => {
     const res = await next.fetch('/catchall-redirect/hello/world', {
       redirect: 'manual',
     })
-    const { pathname, search } = new URL(res.headers.get('location'), res.url)
+    const { pathname, search } = new URL(res.headers.get('location'), next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/somewhere')
     expect(search).toEqual('')
@@ -638,7 +639,7 @@ describe('Custom routes', () => {
 
   it('show allow redirect to override the page', async () => {
     const res = await next.fetch('/redirect-override', { redirect: 'manual' })
-    const { pathname } = new URL(res.headers.get('location') || '', res.url)
+    const { pathname } = new URL(res.headers.get('location') || '', next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/thank-you-next')
   })
@@ -792,7 +793,7 @@ describe('Custom routes', () => {
     expect(res.status).toBe(200)
     expect(
       [...externalServerHits].map((u) => {
-        const { pathname, searchParams } = new URL(u, res.url)
+        const { pathname, searchParams } = new URL(u, next.url)
         return {
           pathname,
           query: Object.fromEntries(searchParams),
@@ -816,7 +817,7 @@ describe('Custom routes', () => {
     const res = await next.fetch('/unnamed/first/final', {
       redirect: 'manual',
     })
-    const { pathname } = new URL(res.headers.get('location') || '', res.url)
+    const { pathname } = new URL(res.headers.get('location') || '', next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/got-unnamed')
   })
@@ -825,7 +826,7 @@ describe('Custom routes', () => {
     const res = await next.fetch('/named-like-unnamed/first', {
       redirect: 'manual',
     })
-    const { pathname } = new URL(res.headers.get('location') || '', res.url)
+    const { pathname } = new URL(res.headers.get('location') || '', next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/first')
   })
@@ -898,7 +899,7 @@ describe('Custom routes', () => {
     const res = await next.fetch('/docs/integrations/v2-some/thing', {
       redirect: 'manual',
     })
-    const { pathname } = new URL(res.headers.get('location') || '', res.url)
+    const { pathname } = new URL(res.headers.get('location') || '', next.url)
     expect(res.status).toBe(307)
     expect(pathname).toBe('/integrations/-some/thing')
   })
@@ -1117,7 +1118,7 @@ describe('Custom routes', () => {
     const res1 = await next.fetch('/has-rewrite-4')
     expect(res1.status).toBe(404)
 
-    const res = await next.fetch('/has-rewrite-4', {
+    const res = await fetchViaRawHttp(next.appPort, '/has-rewrite-4', {
       headers: {
         host: 'example.com',
       },
@@ -1217,7 +1218,7 @@ describe('Custom routes', () => {
     })
 
     expect(res.status).toBe(307)
-    const parsed = new URL(res.headers.get('location'), res.url)
+    const parsed = new URL(res.headers.get('location'), next.url)
 
     expect(parsed.pathname).toBe('/another')
     expect(Object.fromEntries(parsed.searchParams)).toEqual({
@@ -1234,7 +1235,7 @@ describe('Custom routes', () => {
     })
 
     expect(res.status).toBe(307)
-    const parsed = new URL(res.headers.get('location'), res.url)
+    const parsed = new URL(res.headers.get('location'), next.url)
 
     expect(parsed.pathname).toBe('/another')
     expect(Object.fromEntries(parsed.searchParams)).toEqual({
@@ -1255,7 +1256,7 @@ describe('Custom routes', () => {
     })
 
     expect(res.status).toBe(307)
-    const parsed = new URL(res.headers.get('location'), res.url)
+    const parsed = new URL(res.headers.get('location'), next.url)
 
     expect(parsed.pathname).toBe('/another')
     expect(Object.fromEntries(parsed.searchParams)).toEqual({
@@ -1270,7 +1271,7 @@ describe('Custom routes', () => {
     const res1 = await next.fetch('/has-redirect-4', { redirect: 'manual' })
     expect(res1.status).toBe(404)
 
-    const res = await next.fetch('/has-redirect-4', {
+    const res = await fetchViaRawHttp(next.appPort, '/has-redirect-4', {
       headers: {
         host: 'example.com',
       },
@@ -1278,7 +1279,7 @@ describe('Custom routes', () => {
     })
 
     expect(res.status).toBe(307)
-    const parsed = new URL(res.headers.get('location'), res.url)
+    const parsed = new URL(res.headers.get('location'), next.url)
 
     expect(parsed.pathname).toBe('/another')
     expect(Object.fromEntries(parsed.searchParams)).toEqual({
@@ -1290,7 +1291,7 @@ describe('Custom routes', () => {
     const res1 = await next.fetch('/has-redirect-6', { redirect: 'manual' })
     expect(res1.status).toBe(404)
 
-    const res = await next.fetch('/has-redirect-6', {
+    const res = await fetchViaRawHttp(next.appPort, '/has-redirect-6', {
       headers: {
         host: 'hello-test.example.com',
       },
@@ -1298,7 +1299,7 @@ describe('Custom routes', () => {
     })
 
     expect(res.status).toBe(307)
-    const parsed = new URL(res.headers.get('location'), res.url)
+    const parsed = new URL(res.headers.get('location'), next.url)
 
     expect(parsed.protocol).toBe('https:')
     expect(parsed.hostname).toBe('hello.example.com')
@@ -1313,7 +1314,7 @@ describe('Custom routes', () => {
       redirect: 'manual',
     })
     expect(res.status).toBe(307)
-    const parsed = new URL(res.headers.get('location'), res.url)
+    const parsed = new URL(res.headers.get('location'), next.url)
 
     expect(parsed.pathname).toBe('/somewhere')
     const query = {}
@@ -1367,7 +1368,7 @@ describe('Custom routes', () => {
   })
 
   it('should match has host for header correctly', async () => {
-    const res = await next.fetch('/has-header-4', {
+    const res = await fetchViaRawHttp(next.appPort, '/has-header-4', {
       headers: {
         host: 'example.com',
       },
@@ -3640,7 +3641,7 @@ describe('Custom routes solo types', () => {
       expect(res.headers.get('x-custom-header')).toBeFalsy()
       expect(res.headers.get('x-another-header')).toBeFalsy()
 
-      const { pathname } = new URL(res2.headers.get('location'), res.url)
+      const { pathname } = new URL(res2.headers.get('location'), next.url)
       expect(res2.status).toBe(301)
       expect(pathname).toBe('/docs/v2/advanced/now-for-github')
 

@@ -4,10 +4,15 @@ async function resolveStreamResponse(response: any, onData?: any) {
   let result = ''
   onData = onData || (() => {})
 
+  const decoder = new TextDecoder()
   for await (const chunk of response.body) {
-    result += chunk.toString()
-    onData(chunk.toString(), result)
+    // fetch bodies yield Uint8Array, which unlike Buffer does not decode
+    // with toString().
+    const text = decoder.decode(chunk, { stream: true })
+    result += text
+    onData(text, result)
   }
+  result += decoder.decode()
   return result
 }
 
